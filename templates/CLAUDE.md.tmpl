@@ -1,0 +1,40 @@
+# {{PROJECT_NAME}} Workspace
+
+## Session Start
+
+At the start of every session, before doing any work:
+
+1. Read `{{PROJECT_NAME}}-context/INDEX.md` to navigate the knowledge base
+2. Read `{{PROJECT_NAME}}-context/STATE.md` for current platform health
+3. Read `{{PROJECT_NAME}}-context/BACKLOG.md` for known issues and what was already tried
+4. Read the last 20 lines of `{{PROJECT_NAME}}-context/LEARNINGS.jsonl` for accumulated knowledge
+5. Check `{{PROJECT_NAME}}-context/SESSIONS/` for the latest session checkpoint
+
+Synthesize a brief welcome message before proceeding.
+
+## Architecture
+
+(Fill in your project's architecture: services, ports, repos, how they connect)
+
+## Repos
+
+(Fill in your repos: what each one does, key files, dependencies)
+
+## Testing
+
+(Fill in how to run tests for each repo)
+
+## Skill Routing
+
+When the user's request matches a skill, invoke it:
+
+- Test and fix bugs autonomously -> `/test-fix`
+- Debug a specific issue, root cause analysis -> `/investigate`
+- Save progress, end of session -> `/checkpoint`
+- Start of session, load context -> `/resume`
+- Quick health check -> `/status`
+- Build/refresh knowledge base -> `/compile-wiki`
+
+## Critical Rules
+
+(Fill in your project's non-negotiable rules)

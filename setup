@@ -1,0 +1,145 @@
+#!/bin/bash
+# forge setup -- Initialize context repo and link commands into workspace
+#
+# Usage:
+#   ./forge/setup                    # Auto-detect project name from directory
+#   ./forge/setup --name myproject   # Explicit project name
+
+set -euo pipefail
+
+FORGE_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE_DIR="$(dirname "$FORGE_DIR")"
+
+# Parse args
+PROJECT_NAME=""
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --name) PROJECT_NAME="$2"; shift 2 ;;
+    *) echo "Unknown arg: $1"; exit 1 ;;
+  esac
+done
+
+# Auto-detect project name from workspace directory
+if [ -z "$PROJECT_NAME" ]; then
+  PROJECT_NAME=$(basename "$WORKSPACE_DIR" | sed 's/-workspace$//')
+  echo "Detected project: $PROJECT_NAME"
+  echo "  (override with: ./forge/setup --name yourproject)"
+fi
+
+CONTEXT_DIR="$WORKSPACE_DIR/${PROJECT_NAME}-context"
+COMMANDS_DIR="$WORKSPACE_DIR/.claude/commands"
+
+echo ""
+echo "forge setup"
+echo "==========================================="
+echo "  Workspace:  $WORKSPACE_DIR"
+echo "  Project:    $PROJECT_NAME"
+echo "  Context:    $CONTEXT_DIR"
+echo "  Commands:   $COMMANDS_DIR"
+echo "==========================================="
+echo ""
+
+# Step 1: Create context repo if it doesn't exist
+if [ -d "$CONTEXT_DIR" ]; then
+  echo "Context repo exists: $CONTEXT_DIR"
+else
+  echo "Creating context repo: $CONTEXT_DIR"
+  mkdir -p "$CONTEXT_DIR"/{wiki/{architecture,api,bugs,decisions,patterns},raw,SESSIONS}
+
+  # Copy templates
+  for tmpl in "$FORGE_DIR"/templates/*.tmpl; do
+    target="$CONTEXT_DIR/$(basename "$tmpl" .tmpl)"
+    if [ ! -f "$target" ]; then
+      sed "s/{{PROJECT_NAME}}/$PROJECT_NAME/g" "$tmpl" > "$target"
+      echo "  Created: $(basename "$target")"
+    fi
+  done
+
+  # Create empty data files
+  touch "$CONTEXT_DIR/LEARNINGS.jsonl"
+  touch "$CONTEXT_DIR/timeline.jsonl"
+  touch "$CONTEXT_DIR/SESSIONS/.gitkeep"
+  touch "$CONTEXT_DIR/raw/.gitkeep"
+
+  # Create .gitignore
+  cat > "$CONTEXT_DIR/.gitignore" << 'EOF'
+node_modules/
+.DS_Store
+*.tmp
+EOF
+
+  # Create README
+  cat > "$CONTEXT_DIR/README.md" << EOF
+# ${PROJECT_NAME}-context
+
+Persistent context and knowledge base for the ${PROJECT_NAME} workspace.
+Created by [forge](https://github.com/vakra-dev/forge).
+
+Every state change is a git commit. Full history and diffs.
+
+## Structure
+
+- \`INDEX.md\` -- Navigate the wiki (read this first)
+- \`STATE.md\` -- Current health of all repos/services
+- \`BACKLOG.md\` -- Known issues + what was tried
+- \`LEARNINGS.jsonl\` -- Cross-session institutional knowledge
+- \`timeline.jsonl\` -- Skill event history
+- \`SESSIONS/\` -- Session checkpoints
+- \`wiki/\` -- LLM-compiled knowledge base articles
+- \`raw/\` -- Raw source material for wiki compilation
+EOF
+
+  # Git init
+  cd "$CONTEXT_DIR"
+  git init
+  git add -A
+  git commit -m "forge: initialize ${PROJECT_NAME}-context"
+  cd "$WORKSPACE_DIR"
+
+  echo "  Context repo created and committed."
+fi
+
+# Step 2: Link commands into .claude/commands/
+echo ""
+echo "Linking commands..."
+mkdir -p "$COMMANDS_DIR"
+
+for cmd in "$FORGE_DIR"/commands/*.md; do
+  name=$(basename "$cmd")
+  target="$COMMANDS_DIR/$name"
+
+  # Remove old symlink or file
+  if [ -L "$target" ] || [ -f "$target" ]; then
+    rm "$target"
+  fi
+
+  # Create symlink
+  ln -s "$cmd" "$target"
+  echo "  Linked: /$(basename "$name" .md)"
+done
+
+# Step 3: Check for CLAUDE.md
+echo ""
+if [ -f "$WORKSPACE_DIR/CLAUDE.md" ]; then
+  echo "CLAUDE.md exists. Checking for forge routing..."
+  if grep -q "forge" "$WORKSPACE_DIR/CLAUDE.md" 2>/dev/null; then
+    echo "  Routing rules found."
+  else
+    echo "  No forge routing rules found."
+    echo "  Add skill routing to CLAUDE.md manually, or run /compile-wiki to auto-add."
+  fi
+else
+  echo "No CLAUDE.md found."
+  echo "  Copy forge/templates/CLAUDE.md.tmpl to CLAUDE.md and fill in your project details."
+  echo "  Or run /compile-wiki to auto-generate one."
+fi
+
+echo ""
+echo "==========================================="
+echo "  forge is ready."
+echo ""
+echo "  Next steps:"
+echo "    /status          Check your stack health"
+echo "    /compile-wiki    Build knowledge base from codebase"
+echo "    /checkpoint      Save current session state"
+echo "==========================================="

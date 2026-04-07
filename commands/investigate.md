@@ -1,263 +1,777 @@
-# /investigate -- Root Cause Debugging
+# /investigate -- Systematic Root Cause Debugging
 
-You are a senior engineer doing systematic root cause analysis. You follow a strict methodology: investigate first, fix second. Never guess. Never apply a fix you can't verify.
+You are a **Principal Engineer doing systematic root cause analysis**. You don't guess.
+You don't patch symptoms. You trace the bug from symptom to root cause through careful
+investigation, then apply the minimum fix that eliminates the actual problem.
+
+This skill is adapted from gstack's /investigate methodology. The iron law applies:
+no fixes without root cause investigation first.
 
 ## Iron Law
 
 **NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST.**
 
-Fixing symptoms creates whack-a-mole debugging. Every fix that doesn't address root cause makes the next bug harder to find. Find the root cause, then fix it.
+Fixing symptoms creates whack-a-mole debugging. Every fix that doesn't address root
+cause makes the next bug harder to find. A "quick fix" that doesn't address root cause
+is NOT a fix. It's technical debt with a bow on it.
+
+**If you catch yourself thinking "this should fix it" without understanding WHY it's
+broken, STOP.** You are guessing. Go back to investigation.
 
 ---
 
 ## Preamble -- Load Context
 
+### P1. Find the context directory
+
 ```bash
 CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
-echo "CONTEXT: ${CONTEXT_DIR:-NONE}"
+if [ -n "$CONTEXT_DIR" ]; then
+  echo "CONTEXT_DIR: $CONTEXT_DIR"
+  PROJECT_NAME=$(echo "$CONTEXT_DIR" | sed 's/-context\///')
+  echo "PROJECT: $PROJECT_NAME"
+else
+  echo "CONTEXT_DIR: NONE"
+fi
 ```
 
-Read the knowledge base for prior investigations:
+**If CONTEXT_DIR is NONE:** You can still investigate (just won't have wiki context).
+Note: "No forge context found. Investigating without knowledge base context."
+
+### P2. Read the knowledge base index
 
 ```bash
-echo "=== INDEX ==="
-cat "${CONTEXT_DIR}INDEX.md" 2>/dev/null | head -60
-echo ""
+CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
+echo "=== KNOWLEDGE BASE INDEX ==="
+cat "${CONTEXT_DIR}INDEX.md" 2>/dev/null || echo "NO INDEX"
+```
+
+Scan the index. Look for:
+- **Architecture articles** for the affected service -- read them for understanding
+- **Bug articles** that might be related -- read them for prior investigation
+- **Pattern articles** that might explain the failure class
+
+### P3. Read the backlog
+
+```bash
+CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
 echo "=== BACKLOG ==="
-cat "${CONTEXT_DIR}BACKLOG.md" 2>/dev/null
-echo ""
-echo "=== RECENT LEARNINGS ==="
-tail -20 "${CONTEXT_DIR}LEARNINGS.jsonl" 2>/dev/null || echo "none"
+cat "${CONTEXT_DIR}BACKLOG.md" 2>/dev/null || echo "NO BACKLOG"
 ```
 
-**Check for existing bug articles** related to the issue. If wiki/bugs/ has an article about this, READ IT FIRST. It may contain prior investigation that saves you from re-doing work.
+**CRITICAL:** Check if this bug is already in the backlog. If it is:
+- Read the "What we tried" section. DO NOT RETRY failed approaches.
+- Read the root cause if known. Don't re-investigate what's already understood.
+- If the backlog has partial investigation, BUILD ON IT. Don't start from scratch.
+
+### P4. Read existing bug articles
 
 ```bash
-ls "${CONTEXT_DIR}wiki/bugs/" 2>/dev/null || echo "No bug articles yet"
+CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
+echo "=== BUG ARTICLES ==="
+ls "${CONTEXT_DIR}wiki/bugs/"*.md 2>/dev/null || echo "No bug articles"
 ```
 
-If a matching bug article exists, read it. Look specifically for "What was tried" and "Root cause" sections.
+If a bug article exists for this issue, READ IT COMPLETELY. It may contain:
+- Prior investigation timeline
+- Hypotheses that were tested
+- Partial root cause analysis
+- Related files and code paths
 
-**Check BACKLOG.md** for this issue. If the backlog says an approach was tried and failed, DO NOT retry it. Find a different approach.
+### P5. Read recent learnings
+
+```bash
+CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
+echo "=== LEARNINGS ==="
+tail -20 "${CONTEXT_DIR}LEARNINGS.jsonl" 2>/dev/null || echo "NO LEARNINGS"
+```
+
+Look for learnings relevant to this investigation:
+- **pitfall** type: things NOT to do
+- **architecture** type: how the system works (useful for tracing)
+- **operational** type: quirks that might explain the behavior
+
+If a learning matches the issue, display: "Prior learning applied: [{key}] {insight}
+(confidence {N}/10)"
+
+### P6. Read architecture articles for affected service
+
+If the INDEX.md lists architecture articles for the service involved in this bug:
+
+```bash
+CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
+# Read the article for the affected service
+cat "${CONTEXT_DIR}wiki/architecture/{service}.md" 2>/dev/null || echo "No architecture article for this service"
+```
+
+This gives you:
+- Key files to look at
+- How the request flow works
+- Dependencies that might be involved
+- Known gotchas
 
 ---
 
 ## Phase 1: Root Cause Investigation
 
-Gather context before forming any hypothesis.
+Gather context BEFORE forming ANY hypothesis.
 
 ### 1a. Collect symptoms
 
-Read the error messages, stack traces, and reproduction steps. If the user hasn't provided enough context, ask ONE question at a time. Do not batch questions.
+Read the error messages, stack traces, and reproduction steps. Extract:
 
-Key questions:
-- What exactly happens? (error message, HTTP status, behavior)
-- When did it start? (always, recently, after a change)
-- Is it consistent or intermittent?
-- What's the reproduction path?
+- **What exactly happens?** (HTTP status code, error message, behavior observed)
+- **Where does it happen?** (which service, which endpoint, which URL)
+- **When did it start?** (always, recently, after a specific change)
+- **Is it consistent or intermittent?** (every time, sometimes, only under load)
+- **What's the reproduction path?** (exact steps, curl command, etc.)
 
-### 1b. Read the code
+**If the user hasn't provided enough context,** ask ONE question at a time via the
+conversation. Do NOT batch multiple questions. Each question should be specific:
 
-Trace the code path from the symptom back to potential causes:
-- Use Grep to find relevant code (error messages, function names, route handlers)
-- Use Read to understand the logic around the failure point
-- Trace the full request/data flow from entry to failure
+- GOOD: "What HTTP status code does the API return when this happens?"
+- BAD: "Can you provide more details about the error, the reproduction steps, and
+  when it started?"
 
-**Multi-repo awareness:** The bug may span repos. A failure in reader-api may have its root cause in the reader engine or supermarkdown. Trace across repo boundaries.
+### 1b. Read the code path
+
+Trace from the symptom back to potential causes. Start at the entry point and follow
+the execution path:
+
+**For API errors:** Start at the route handler, trace through middleware, service calls,
+and error handling.
+
+```bash
+# Find the relevant route
+grep -rn "POST.*v1/read\|router.post.*read" reader-api/src/routes/ 2>/dev/null | head -5
+```
+
+```bash
+# Find error handling
+grep -rn "scrape_timeout\|upstream_unavailable\|internal_error" reader-api/src/ 2>/dev/null | head -10
+```
+
+**For engine errors:** Start at the engine's HTTP handler, trace through the scraping
+pipeline.
+
+```bash
+# Find the scraping entry point
+grep -rn "async.*scrape\|function.*scrape" reader/src/ 2>/dev/null | head -10
+```
+
+**For supermarkdown panics:** Look at the Rust code, specifically the function that panics.
+
+```bash
+# Find panic-prone code
+grep -rn "unwrap()\|panic!\|expect(" supermarkdown/src/ 2>/dev/null | head -10
+```
+
+**For multi-repo issues:** The bug might cross service boundaries. A 502 from reader-api
+might mean the engine is down. A malformed markdown response might mean supermarkdown
+has a bug. Trace ACROSS repos:
+
+```
+Client -> reader-api (which error code?) -> reader engine (did it respond? what did it return?)
+  -> supermarkdown (did it panic? what was the input HTML?)
+```
+
+Read ALL files along the path. Use Read tool for full file content when you need to
+understand logic. Use Grep for finding references and tracing calls.
 
 ### 1c. Check recent changes
 
 ```bash
-# For each potentially affected repo:
-cd {repo} && git log --oneline -20 -- {affected-files} && cd ..
+# For each potentially affected repo
+for repo in reader reader-api supermarkdown reader-cloud-api; do
+  if [ -d "$repo" ]; then
+    echo "=== $repo recent changes ==="
+    cd "$repo"
+    git log --oneline -20 2>/dev/null
+    cd ..
+    echo ""
+  fi
+done
 ```
 
-Was this working before? What changed? A regression means the root cause is in the diff.
+**For the specific affected files:**
 
-### 1d. Reproduce
+```bash
+cd {repo}
+git log --oneline -20 -- {affected-file-1} {affected-file-2}
+git diff HEAD~5 -- {affected-file-1}
+cd ..
+```
 
-Can you trigger the bug deterministically? For API bugs:
+Was this working before? If git log shows a recent change to the affected files, the
+root cause is likely in that diff.
+
+### 1d. Reproduce deterministically
+
+Before forming any hypothesis, confirm you can trigger the bug:
+
+**For API issues:**
 
 ```bash
 curl -X POST http://localhost:6002/v1/read \
   -H "x-api-key: $READER_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"url": "{problem-url}"}'
+  -d '{"url": "{problem-url}"}' \
+  -w "\n\nHTTP Status: %{http_code}\nTime: %{time_total}s\n"
 ```
 
-For engine bugs, check engine logs. For supermarkdown bugs, test the Rust code directly.
+**For engine issues:**
 
-If you can't reproduce, gather more evidence before proceeding.
+```bash
+curl -X POST http://localhost:6003/scrape \
+  -H "Content-Type: application/json" \
+  -d '{"url": "{problem-url}"}' \
+  -w "\n\nHTTP Status: %{http_code}\nTime: %{time_total}s\n"
+```
+
+**For test failures:**
+
+```bash
+cd {repo} && npx vitest run {test-file} 2>&1 | tail -30
+```
+
+**If you CANNOT reproduce:**
+- Check if the issue is intermittent (try 3 times)
+- Check if it requires specific state (database content, cache, session)
+- Check if it requires specific input (certain URLs, certain HTML structures)
+- If still not reproducible, log what you tried and ask the user for more context
+
+**Do NOT proceed to hypothesis formation until you can reproduce OR you have a clear
+theory about why it's intermittent.**
 
 ---
 
 ## Phase 2: Pattern Analysis
 
-Check if this bug matches a known pattern:
+Check if this bug matches a known pattern. These are the most common failure modes in
+web scraping/API systems:
+
+### 2a. Pattern matching table
 
 | Pattern | Signature | Where to look |
 |---------|-----------|---------------|
-| Panic/crash | "thread panicked", SIGSEGV, process exit | supermarkdown Rust code, engine process |
-| Timeout | 504, scrape_timeout, "exceeded timeoutMs" | Browser pool, proxy, slow pages |
-| Bot detection | 403, "Access Denied", captcha | Proxy tier, user agent, page anti-bot |
-| Null propagation | TypeError, "Cannot read property" | Missing guards on optional values |
-| Integration failure | Connection refused, ECONNRESET | Service boundaries, health checks |
-| State corruption | Inconsistent data, partial results | MongoDB, job status, credits |
-| Configuration drift | Works locally, fails elsewhere | Env vars, .env files, config defaults |
+| **Panic/crash** | "thread panicked", SIGSEGV, process exit | supermarkdown Rust code (unwrap, expect), engine process |
+| **Timeout** | 504, scrape_timeout, "exceeded timeoutMs" | Browser pool (all browsers busy?), proxy (slow?), page (heavy JS?) |
+| **Bot detection** | 403, "Access Denied", captcha, empty body | Proxy tier (datacenter vs residential), user agent, page anti-bot |
+| **Null propagation** | TypeError, "Cannot read property of undefined" | Missing null guards on optional values in JS/TS |
+| **Integration failure** | Connection refused, ECONNRESET, ECONNREFUSED | Service boundaries (engine down? MongoDB down?) |
+| **State corruption** | Inconsistent data, partial job results | MongoDB (write conflicts?), job status machine |
+| **Configuration drift** | Works in test, fails live | Env vars (.env missing?), config defaults, service URLs |
+| **Race condition** | Intermittent, timing-dependent | Concurrent browser pool access, async credit deduction |
+| **Memory/resource leak** | Degrading over time, works on restart | Browser pool (not releasing browsers?), event listeners |
+| **HTML edge case** | Specific URLs fail, others don't | Unusual HTML structure (nested tables, iframes, shadow DOM) |
 
-Also check:
-- BACKLOG.md for related known issues
-- wiki/bugs/ for prior investigations in the same area
-- wiki/patterns/ for known patterns
-- `git log` for prior fixes in the same files -- **recurring bugs in the same files are an architectural smell**
+### 2b. Cross-reference with known issues
+
+Check BACKLOG.md and wiki/bugs/ for related issues:
+
+```bash
+CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
+# Search learnings for related patterns
+grep -i "{relevant-keyword}" "${CONTEXT_DIR}LEARNINGS.jsonl" 2>/dev/null || echo "No matching learnings"
+```
+
+**Also check:**
+- `git log` for prior fixes in the same files. **Recurring bugs in the same files
+  are an architectural smell.** The file itself may need restructuring, not another patch.
+- Stack Overflow or GitHub issues for the specific error (if it involves a library
+  like Hero, Playwright, Mongoose, etc.)
+
+### 2c. External search (if needed)
+
+If the bug doesn't match a known pattern and involves a library or framework:
+
+- Search for `"{framework} {error-type}"` (e.g., "Hero browser pool timeout")
+- **SANITIZE FIRST:** Strip hostnames, IPs, file paths, SQL, customer data from
+  search queries. Search the error CATEGORY, not the raw message.
+- If a known library bug or workaround surfaces, note it as a hypothesis candidate.
 
 ---
 
-## Phase 3: Hypothesis Testing
+## Phase 3: Hypothesis Formation and Testing
 
-Before writing ANY fix, verify your hypothesis.
+### 3a. Form hypothesis
 
-### 3a. Confirm the hypothesis
+Based on investigation (Phase 1) and pattern analysis (Phase 2), state your hypothesis:
 
-Add a temporary log statement, assertion, or debug output at the suspected root cause. Run the reproduction. Does the evidence match?
+**"Root cause hypothesis: {specific, testable claim about what is wrong and why}"**
 
-### 3b. If the hypothesis is wrong
+Examples of GOOD hypotheses:
+- "The `table.rs` recursive descent parser stack-overflows when table nesting exceeds
+  5 levels because there's no depth guard in the `parse_table` function at line 234"
+- "The reader engine's pool runs out of browsers when batch concurrency > pool-size
+  because `acquireBrowser()` in `pool.ts:78` doesn't queue requests, it fails immediately"
+- "The webhook delivery timeout of 10s is too short for slow receivers, causing
+  `upstream_unavailable` errors in `webhook.ts:145`"
 
-Return to Phase 1. Gather more evidence. Do not guess.
+Examples of BAD hypotheses (too vague):
+- "Something is wrong with the table parsing"
+- "The engine might be slow"
+- "There could be a timeout issue"
 
-### 3c. 3-strike rule
+### 3b. Verify the hypothesis BEFORE writing any fix
 
-**If 3 hypotheses fail, STOP.** Do not continue guessing. Report:
+Add temporary logging, assertions, or debug output at the suspected root cause:
+
+```bash
+# Example: Add a log to verify the hypothesis
+cd {repo}
+# Read the suspected file
+cat -n src/{file}.ts | head -50
+```
+
+Then reproduce the bug and check if the evidence matches your hypothesis.
+
+**Evidence that CONFIRMS a hypothesis:**
+- The added log shows the exact problematic value/state
+- The assertion triggers at the exact predicted point
+- Removing/changing the suspected code eliminates the bug
+
+**Evidence that DISPROVES a hypothesis:**
+- The log shows normal values (the problem is elsewhere)
+- The assertion doesn't trigger (the code path isn't reached)
+- Changing the suspected code doesn't affect the bug
+
+### 3c. If the hypothesis is WRONG
+
+Do NOT guess again immediately. Return to Phase 1:
+
+1. Remove your debug additions
+2. Re-read the code with fresh eyes
+3. Check what the debug output DID show (it might point to the real cause)
+4. Form a NEW hypothesis based on the new evidence
+
+### 3d. 3-Strike Rule
+
+**If 3 hypotheses fail, STOP.** This is a hard rule. Three wrong guesses means you're
+missing something fundamental. It might be:
+
+- An architectural issue (not a bug in one file, but a design flaw)
+- An environmental issue (not code, but configuration or infrastructure)
+- A timing issue (not reproducible in your debugging setup)
+- Outside your current understanding (need someone who knows the system)
+
+Report:
 
 ```
 STATUS: BLOCKED
-REASON: 3 hypotheses tested, none match. This may be architectural.
-ATTEMPTED: [list each hypothesis and why it was disproven]
-RECOMMENDATION: [what the user should investigate next, or suggest escalation]
+
+3 hypotheses tested, none confirmed.
+
+Hypothesis 1: {what you thought}
+  Evidence: {why it was disproven}
+
+Hypothesis 2: {what you thought}
+  Evidence: {why it was disproven}
+
+Hypothesis 3: {what you thought}
+  Evidence: {why it was disproven}
+
+This suggests the issue may be:
+  - Architectural (not a single-file bug)
+  - Environmental (configuration, infrastructure)
+  - Intermittent (timing-dependent, hard to reproduce)
+
+RECOMMENDATION: {what to try next, who to ask, what to investigate differently}
 ```
 
-### Red flags -- slow down if you see:
+### 3e. Red flags -- STOP and reassess if you see these
 
-- "Quick fix for now" -- there is no "for now." Fix it right or escalate.
-- Proposing a fix before tracing data flow -- you're guessing.
-- Each fix reveals a new problem elsewhere -- wrong layer, not wrong code.
+- **"Quick fix for now"** -- There is no "for now." Fix it right or escalate.
+- **Proposing a fix before tracing data flow** -- You're guessing, not investigating.
+- **Each fix reveals a NEW problem** -- You're at the wrong layer. Step back.
+- **The fix is getting bigger and bigger** -- The root cause might be simpler than
+  you think, or the problem might be architectural.
+- **You're modifying files you didn't expect to** -- Scope creep. The root cause is
+  probably in a different place.
 
 ---
 
 ## Phase 4: Implementation
 
-Once root cause is CONFIRMED (not suspected, confirmed):
+Once root cause is **CONFIRMED** (not suspected -- confirmed with evidence):
 
 ### 4a. Scope lock
 
-Identify the narrowest repo and directory containing the bug. Restrict your edits to that scope. Do NOT touch unrelated code, do NOT refactor adjacent code, do NOT "improve" things while you're here.
+Identify the narrowest repo and directory containing the fix:
 
-### 4b. Fix the root cause
+**Ask yourself:**
+- Which repo is the root cause in? (reader? reader-api? supermarkdown?)
+- Which directory within that repo? (src/routes/? src/middleware/? src/table.rs?)
+- Can the fix be contained to that directory?
 
-The smallest change that eliminates the actual problem. Minimal diff. Fewest files touched.
+**Restrict your edits to the scope.** Do NOT:
+- Touch files outside the affected directory
+- Refactor adjacent code ("while I'm here...")
+- Add features
+- Update dependencies
+- Fix unrelated issues you notice
+
+If you notice an unrelated issue, LOG it (to BACKLOG.md or a learning) and move on.
+Do NOT fix it in this investigation.
+
+### 4b. Apply the minimal fix
+
+The SMALLEST change that eliminates the root cause:
+
+- If the fix is a null guard, add the null guard. Don't refactor the function.
+- If the fix is a timeout increase, increase the timeout. Don't redesign the retry logic.
+- If the fix is a depth limit, add the depth limit. Don't rewrite the parser.
+
+**Diff should be as small as possible.** Every line you change is a line that could
+introduce a new bug.
 
 ### 4c. Write a regression test
 
-Write a test that:
-- **Fails** without the fix (proves the test catches the bug)
-- **Passes** with the fix (proves the fix works)
+A test that:
+1. **FAILS without the fix** (proves the test actually catches this bug)
+2. **PASSES with the fix** (proves the fix works)
 
-Study existing test patterns in the repo (2-3 test files) and match their style exactly.
+**How to write it:**
+
+```bash
+# Find existing test patterns in the repo
+cd {repo}
+ls test/ tests/ 2>/dev/null
+# Read 2-3 existing test files to learn conventions
+cat test/{example-test}.ts | head -50
+```
+
+Match the EXISTING test style EXACTLY:
+- Same imports
+- Same describe/it/test structure
+- Same assertion library
+- Same setup/teardown patterns
+
+The test should:
+- Reproduce the exact conditions that trigger the bug
+- Assert the correct behavior (not just "doesn't crash")
+- Be named descriptively: `it("should handle nested tables without panic")`
+- Include a comment: `// Regression: {brief description of the bug}`
 
 ### 4d. Run the test suite
 
+Run ALL tests in the affected repo:
+
 ```bash
-cd {affected-repo} && {test-command}
+cd {repo}
+{test-command} 2>&1
 ```
 
-Paste the output. No regressions allowed.
+Paste the FULL output (or at least the summary + any failures).
+
+**If tests pass:** Good. Proceed.
+**If YOUR new test fails:** Your fix doesn't actually work. Go back to Phase 3.
+**If OTHER tests fail:** Your fix broke something. Investigate the regression before proceeding.
+**No regressions allowed.**
 
 ### 4e. Blast radius check
 
-**If the fix touches >5 files:** STOP and ask the user before proceeding:
+Count how many files your fix touches:
 
-"This fix touches N files. That's a large blast radius for a bug fix. Options:
+```bash
+cd {repo}
+git diff --stat
+```
+
+**If fix touches 1-5 files:** Normal for a bug fix. Proceed.
+**If fix touches >5 files:** STOP. This is a large blast radius for a bug fix.
+Ask the user:
+
+"This fix touches {N} files. That's a large blast radius. This might mean the root
+cause is architectural rather than a localized bug.
+
 A) Proceed -- the root cause genuinely spans these files
 B) Split -- fix the critical path now, defer the rest
-C) Rethink -- maybe there's a more targeted approach"
+C) Rethink -- step back and look for a more targeted approach"
 
 ### 4f. Commit
 
-One commit per fix. Message format: `fix({repo}): {what was fixed} -- root cause: {brief RC}`
+**One commit per fix.** Never bundle multiple fixes into one commit.
+
+Commit message format:
+```
+fix({repo}): {what was fixed}
+
+Root cause: {one-line root cause explanation}
+Regression test: {test file path}
+```
+
+Example:
+```
+fix(supermarkdown): prevent panic on nested tables deeper than 10 levels
+
+Root cause: recursive descent in table.rs:234 had no depth guard, causing
+stack overflow on deeply nested HTML tables (common in Wikipedia).
+Regression test: tests/table_nesting.rs
+```
 
 ---
 
-## Phase 5: Verification and Report
+## Phase 5: Verification
 
-### 5a. Fresh verification
+### 5a. Fresh reproduction
 
-Reproduce the original bug scenario and confirm it's fixed. This is not optional.
+Reproduce the ORIGINAL bug scenario and confirm it's fixed:
 
-### 5b. Structured debug report
+```bash
+# Run the exact same reproduction from Phase 1d
+curl -X POST http://localhost:6002/v1/read \
+  -H "x-api-key: $READER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "{problem-url}"}' \
+  -w "\n\nHTTP Status: %{http_code}\nTime: %{time_total}s\n"
+```
+
+**This is NOT optional.** "The test passes" is not the same as "the bug is fixed."
+The test might not cover the exact production scenario.
+
+### 5b. Check for side effects
+
+Does the fix change behavior for NORMAL cases (not just the bug case)?
+
+- If you added a depth limit, does it affect shallow tables?
+- If you added a null guard, does it change the response for valid inputs?
+- If you increased a timeout, does it affect performance for fast pages?
+
+### 5c. Run the full test suite one more time
+
+```bash
+cd {repo}
+{test-command} 2>&1
+```
+
+Confirm: all tests pass, including your new regression test.
+
+---
+
+## Phase 6: Structured Debug Report
+
+Output the report in this EXACT format:
 
 ```
 DEBUG REPORT
-========================================
-Symptom:         {what the user observed}
-Root cause:      {what was actually wrong, with file:line}
-Fix:             {what was changed, with file:line references}
-Evidence:        {test output, reproduction showing fix works}
-Regression test: {file:line of the new test}
-Related:         {BACKLOG items, wiki articles, prior bugs in same area}
-Status:          DONE | DONE_WITH_CONCERNS | BLOCKED
-========================================
+════════════════════════════════════════════════════════════════
+
+Symptom:         {what the user observed / what the test showed}
+Service:         {which service is affected}
+Repo:            {which repo contains the root cause}
+
+Root cause:      {what was actually wrong}
+                 File: {file:line}
+                 Explanation: {2-3 sentences explaining WHY this caused the bug}
+
+Fix:             {what was changed}
+                 File: {file:line} -- {what was changed in this file}
+                 {additional files if needed}
+                 Commit: {hash}
+
+Evidence:        {how we know it's fixed}
+                 - Test: {test file:line} -- {what it tests}
+                 - Reproduction: {curl or command that now succeeds}
+
+Blast radius:    {N} files changed
+                 {list the files}
+
+Related:
+  - BACKLOG: {which backlog entry this resolves, or "new issue"}
+  - Wiki: {which wiki articles were updated}
+  - Learnings: {what was logged}
+  - Prior bugs: {any related prior bugs in the same area}
+
+Status:          {DONE / DONE_WITH_CONCERNS / BLOCKED}
+{If DONE_WITH_CONCERNS:}
+Concerns:        {what concerns remain}
+
+════════════════════════════════════════════════════════════════
 ```
 
 ---
 
-## Phase 6: Update Knowledge Base
+## Phase 7: Update Knowledge Base
 
-### 6a. Update or create bug article
-
-Write/update `{CONTEXT_DIR}wiki/bugs/{slug}.md` with the full investigation:
-- Symptoms, root cause, fix, evidence
-- Investigation timeline (what was tried, what was found)
-- Related code and architectural notes
-
-### 6b. Update BACKLOG.md
-
-If the bug was in the backlog: update its status to resolved with the fix details.
-If the bug was new: add it to the backlog (already resolved).
-
-### 6c. Update INDEX.md
-
-Add the new bug article if it's new. Update the status marker if it changed.
-
-### 6d. Capture learnings
+### 7a. Create or update wiki/bugs/ article
 
 ```bash
-echo '{"ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","skill":"investigate","type":"TYPE","key":"SHORT_KEY","insight":"DESCRIPTION","confidence":N,"source":"observed","files":["path"]}' >> "${CONTEXT_DIR}LEARNINGS.jsonl"
+CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
+ls "${CONTEXT_DIR}wiki/bugs/" 2>/dev/null
 ```
 
-Only log genuine discoveries. Would this save 5+ minutes in a future session?
+**If bug article exists:** Read it, then append to Investigation History:
 
-### 6e. Log to timeline
+```markdown
+### {date} -- /investigate session
+**Hypothesis:** {what we thought}
+**Root cause:** {what it actually was}
+**Fix:** {what was changed} (commit {hash})
+**Regression test:** {test file}
+**Status:** Resolved
+```
+
+Update the top-level Status, Root Cause, and Fix sections.
+
+**If bug article doesn't exist:** Create one using the full format from /checkpoint
+Step 7a (Symptoms, Affected Areas, Investigation History, Root Cause, Fix, Related).
+
+### 7b. Update BACKLOG.md
 
 ```bash
-echo '{"skill":"investigate","event":"completed","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","outcome":"OUTCOME","bug":"SLUG"}' >> "${CONTEXT_DIR}timeline.jsonl"
+CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
+cat "${CONTEXT_DIR}BACKLOG.md"
+```
+
+**If the bug was in the backlog:** Move from "Active Issues" to "Resolved Issues":
+```markdown
+### N. {title}
+- **Resolved:** {date}
+- **Fix:** {one-line description} (commit {hash})
+- **Session:** /investigate on {date}
+```
+
+**If the bug was NOT in the backlog:** Add it directly to "Resolved Issues" (it's
+already fixed, no need to go through Active first).
+
+**If the bug was NOT fixed (3 strikes, escalated):** Update the backlog entry with
+what was tried and why each approach failed. This prevents the next session from
+retrying the same things.
+
+### 7c. Update architecture articles
+
+If the investigation revealed something about how the system works that isn't documented:
+
+- A code path you traced that isn't in the architecture article
+- A dependency relationship you discovered
+- A non-obvious behavior that's important for understanding the service
+
+Update the relevant wiki/architecture/ article.
+
+### 7d. Create pattern or decision articles
+
+**If you fixed a bug that represents a class of issues:**
+Create `wiki/patterns/{slug}.md` documenting the pattern:
+- What the pattern is
+- How to recognize it
+- How to fix it
+- Which code areas are susceptible
+
+**If you made a design decision during the fix:**
+Create `wiki/decisions/{slug}.md` documenting the decision and reasoning.
+
+### 7e. Update INDEX.md
+
+```bash
+CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
+cat "${CONTEXT_DIR}INDEX.md"
+```
+
+If ANY wiki articles were created or updated, update INDEX.md:
+- Add new articles with one-line summaries
+- Update summaries for changed articles
+- Update article count and "Last compiled" timestamp
+
+---
+
+## Phase 8: Learning Capture
+
+For each GENUINE discovery during this investigation:
+
+```bash
+CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
+echo '{"ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","skill":"investigate","type":"TYPE","key":"KEY","insight":"INSIGHT","confidence":N,"source":"observed","files":["path/to/file"]}' >> "${CONTEXT_DIR}LEARNINGS.jsonl"
+```
+
+**What to capture (examples):**
+- type `pitfall`: "supermarkdown unwrap() on line 234 panics on malformed HTML -- always use match or if-let instead" (confidence 9)
+- type `architecture`: "reader-api error handler in middleware/error-handler.ts maps engine timeouts to scrape_timeout but misses ECONNRESET which should map to upstream_unavailable" (confidence 8)
+- type `pattern`: "browser pool exhaustion manifests as timeout, not as a pool-full error -- check pool availability first when debugging timeouts" (confidence 7)
+- type `operational`: "to reproduce engine issues, check reader/logs/ for detailed error traces not shown in API response" (confidence 9)
+
+**Confidence calibration:**
+- 10: User stated this explicitly
+- 8-9: You verified this in the code / saw it happen
+- 6-7: Strong inference from evidence
+- 4-5: Hypothesis that seems right but isn't fully verified
+- 1-3: Wild guess (do not log these)
+
+---
+
+## Phase 9: Timeline Logging
+
+```bash
+CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
+echo '{"skill":"investigate","event":"completed","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","outcome":"OUTCOME","bug":"BUG_SLUG","root_cause":"BRIEF_RC","fix_commit":"HASH_OR_NONE"}' >> "${CONTEXT_DIR}timeline.jsonl"
+```
+
+Replace:
+- OUTCOME: "success" (fixed), "blocked" (3 strikes), "partial" (investigated but not fixed)
+- BUG_SLUG: kebab-case identifier for the bug (matches wiki/bugs/ filename)
+- BRIEF_RC: One-line root cause (or "unknown" if not found)
+- HASH_OR_NONE: Git commit hash of the fix, or "none" if not fixed
+
+---
+
+## Phase 10: Git Commit Context Changes
+
+```bash
+CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
+cd "$CONTEXT_DIR"
+git add -A
+CHANGES=$(git diff --cached --stat | tail -1)
+if [ "$(git diff --cached --name-only | wc -l | tr -d ' ')" -gt 0 ]; then
+  git commit -m "investigate: {bug-slug} -- {outcome} ($(date +%Y-%m-%d))
+
+$CHANGES"
+fi
+cd ..
 ```
 
 ---
 
 ## Critical Rules
 
-- **3+ failed hypotheses -> STOP.** Wrong architecture, not failed hypothesis.
-- **Never apply a fix you cannot verify.** If you can't reproduce and confirm, don't ship it.
-- **Never say "this should fix it."** Verify and prove it. Run the tests.
-- **If fix touches >5 files -> ask the user** about blast radius.
-- **One commit per fix.** Never bundle.
-- **Always check BACKLOG and wiki/bugs/ first.** Do not re-investigate solved problems.
-- **Always update the wiki after investigating.** Even if you didn't fix the bug. The investigation findings are valuable.
+1. **Iron Law: NO FIXES WITHOUT ROOT CAUSE.** If you can't explain WHY the bug happens
+   at a specific file:line, you haven't found the root cause. Keep investigating.
+
+2. **3 failed hypotheses -> STOP.** Do not keep guessing. Escalate. The problem is
+   likely deeper than a single-file bug.
+
+3. **Never apply a fix you cannot verify.** If you can't reproduce the bug, you can't
+   verify the fix. Log what you found and escalate.
+
+4. **Never say "this should fix it."** PROVE it. Run the test. Reproduce. Show evidence.
+
+5. **If fix touches >5 files -> ASK THE USER.** Large blast radius for a bug fix is
+   a code smell. The root cause might be simpler, or the fix might need a different approach.
+
+6. **One commit per fix.** Never bundle. Each fix should be independently revertable.
+
+7. **Always check the backlog first.** Do NOT re-investigate bugs that have prior
+   investigation notes. BUILD ON existing knowledge, don't discard it.
+
+8. **Always check wiki/bugs/ first.** If a bug article exists, read it completely
+   before starting your investigation. It may save you hours.
+
+9. **Always update the knowledge base.** Even FAILED investigations are valuable.
+   "We tried X and it didn't work because Y" saves the next session from trying X.
+
+10. **Scope lock.** Once you know which repo/directory the fix is in, do NOT touch
+    anything outside that scope. If you notice unrelated issues, log them and move on.
 
 ---
 
-## Completion
+## Completion Status
 
-- **DONE** -- root cause found, fix applied, regression test written, all tests pass, wiki updated
-- **DONE_WITH_CONCERNS** -- fixed but cannot fully verify (intermittent bug, needs staging)
-- **BLOCKED** -- root cause unclear after 3 hypotheses, escalated
+- **DONE** -- Root cause found, fix applied, regression test written, ALL tests pass,
+  wiki updated, learnings captured, context committed.
+- **DONE_WITH_CONCERNS** -- Fix applied but:
+  - Cannot fully verify (intermittent bug, needs production testing)
+  - Test passes but reproduction is inconsistent
+  - Fix is correct but related issues remain
+- **BLOCKED** -- Root cause not found after 3 hypotheses. Investigation notes saved.
+  What was tried is documented in BACKLOG and wiki/bugs/.
+- **NEEDS_CONTEXT** -- Cannot reproduce. Need: specific reproduction steps, error logs,
+  environment details, or access to the system where it occurs.

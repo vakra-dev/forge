@@ -20,7 +20,9 @@ Every Claude Code session starts from zero. It doesn't know what you tried yeste
 
 **2. Autonomous skills with safety gates.** `/test-fix` runs your test suite, investigates every failure, fixes bugs with atomic commits, verifies fixes, and loops -- all without you in the room. `/investigate` does systematic root cause debugging with a hard rule: no fixes without root cause. Each skill has escalation rules (3-strike per bug), self-regulation (WTF-likelihood score), and hard caps (20 fixes per session).
 
-**3. Session persistence that actually works.** `/checkpoint` captures everything: what was done, what failed (and WHY it failed), what decisions were made, what's left. `/resume` loads it all back and presents a briefing. The "What Failed -- DO NOT RETRY" section alone saves hours of wasted re-investigation.
+**3. Session persistence that actually works.** `/checkpoint` captures everything: what was done, what failed (and WHY it failed), what decisions were made, what's left. `/recall` loads it all back and presents a briefing. The "What Failed -- DO NOT RETRY" section alone saves hours of wasted re-investigation.
+
+**Why `/recall` and not `/resume`?** Claude Code has a built-in `/resume` command for the conversation picker. We named ours `/recall` to avoid the conflict.
 
 ---
 
@@ -62,7 +64,7 @@ That's it. Setup does three things:
 
 ```bash
 # Load context from where you left off
-/resume
+/recall
 
 # Continue fixing (only re-runs previously failing tests)
 /test-fix --only-failed
@@ -115,7 +117,7 @@ Known Issues: 4 active
 
 ---
 
-### /resume -- Session Briefing
+### /recall -- Session Briefing
 
 **What it does:** Reads every piece of context (INDEX.md, STATE.md, BACKLOG.md, learnings, timeline, latest checkpoint) and synthesizes a structured briefing. Then WAITS for your direction.
 
@@ -143,7 +145,7 @@ REMAINING WORK
 Ready to continue. What would you like to work on?
 ```
 
-**Critical rule:** /resume NEVER starts working. It presents information and waits.
+**Critical rule:** /recall NEVER starts working. It presents information and waits.
 
 ---
 
@@ -362,8 +364,8 @@ forge uses 7 persistence layers, each serving a different purpose:
 | **Backlog** | `BACKLOG.md` | Known issues + failed approaches | /test-fix, /investigate | Every skill |
 | **Wiki** | `wiki/**/*.md` | Deep knowledge articles | /compile-wiki, all skills | On-demand |
 | **Learnings** | `LEARNINGS.jsonl` | Institutional knowledge | All skills | All skills |
-| **Timeline** | `timeline.jsonl` | Event history | All skills | /resume |
-| **Checkpoints** | `SESSIONS/*.md` | Session snapshots | /checkpoint | /resume |
+| **Timeline** | `timeline.jsonl` | Event history | All skills | /recall |
+| **Checkpoints** | `SESSIONS/*.md` | Session snapshots | /checkpoint | /recall |
 
 All layers are git-tracked. Every update is a commit. You get full history and diffs.
 
@@ -375,14 +377,14 @@ All layers are git-tracked. Every update is a commit. You get full history and d
 
 **Morning (5 minutes):**
 ```bash
-/resume                         # Load context from yesterday
+/recall                         # Load context from yesterday
 /test-fix                       # Start autonomous test-fix loop
 # Walk away. Go to office.
 ```
 
 **Evening (10 minutes):**
 ```bash
-/resume                         # See what happened
+/recall                         # See what happened
 git log --oneline reader/       # Review the fix commits
 git log --oneline reader-api/   # Review the fix commits
 /checkpoint                     # Save state for tomorrow
@@ -394,7 +396,7 @@ git log --oneline reader-api/   # Review the fix commits
 7:00 AM    Plan tasks across 5 products
 7:30 AM    Start /test-fix in each workspace (5 terminal tabs)
            Leave for office
-6:00 PM    Come back. Run /resume in each workspace.
+6:00 PM    Come back. Run /recall in each workspace.
            Review fix commits. Approve PRs.
            Run /checkpoint in each.
 ```

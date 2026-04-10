@@ -316,7 +316,7 @@ files_modified:
 {3g: Environment quirks, open questions, blocked items, gotchas}
 ```
 
-**The frontmatter is critical.** It enables /resume to filter by branch, check staleness,
+**The frontmatter is critical.** It enables /recall to filter by branch, check staleness,
 and list modified files. Include ALL repos with their branches, not just the ones that
 were modified.
 
@@ -610,7 +610,7 @@ Context Updates:
 
 ════════════════════════════════════════════════════════════════
 
-Next session: Run /resume to load this context.
+Next session: Run /recall to load this context.
 ```
 
 ---

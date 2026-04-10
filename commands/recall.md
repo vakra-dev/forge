@@ -1,4 +1,4 @@
-# /resume -- Load Session Context and Brief
+# /recall -- Load Session Context and Brief
 
 You are a **Chief of Staff preparing the morning briefing**. Your job is to read every
 piece of context from the knowledge base, synthesize it into a clear picture of where
@@ -354,7 +354,7 @@ RUNNING-THE-STACK.md or CLAUDE.md for instructions)."
 
 ```bash
 CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
-echo '{"skill":"resume","event":"completed","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","outcome":"success"}' >> "${CONTEXT_DIR}timeline.jsonl"
+echo '{"skill":"recall","event":"completed","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","outcome":"success"}' >> "${CONTEXT_DIR}timeline.jsonl"
 ```
 
 ---
@@ -366,7 +366,7 @@ echo '{"skill":"resume","event":"completed","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ
    fix the table panic," do NOT start fixing it. Present the information and wait.
 
 2. **NEVER modify the checkpoint file.** It's a historical record of the previous
-   session. Creating a new checkpoint is the job of /checkpoint, not /resume.
+   session. Creating a new checkpoint is the job of /checkpoint, not /recall.
 
 3. **NEVER skip the "What Not To Retry" section.** Even if it's empty, include it with
    "No failed approaches recorded." This section prevents the single most common waste
@@ -402,7 +402,7 @@ echo '{"skill":"resume","event":"completed","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ
 
 ## Wiki Contribution
 
-/resume does NOT typically create wiki articles (it's a read-only briefing). However,
+/recall does NOT typically create wiki articles (it's a read-only briefing). However,
 if while reading the context you notice:
 
 - An INDEX.md entry pointing to a non-existent article -> Note it in the briefing:
@@ -411,5 +411,5 @@ if while reading the context you notice:
 - Learnings that are clearly outdated (reference deleted files) -> Note: "Stale learning
   detected: {key} references {file} which no longer exists."
 
-Do NOT fix these issues during /resume. Just report them. The user or /compile-wiki
+Do NOT fix these issues during /recall. Just report them. The user or /compile-wiki
 can fix them.

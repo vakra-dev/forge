@@ -1,16 +1,36 @@
 # {{PROJECT_NAME}} Workspace
 
-## Session Start
+Powered by [forge](forge/) -- persistent memory and autonomous skills for Claude Code.
 
-At the start of every session, before doing any work:
+## Context Loading
 
-1. Read `{{PROJECT_NAME}}-context/INDEX.md` to navigate the knowledge base
-2. Read `{{PROJECT_NAME}}-context/STATE.md` for current platform health
-3. Read `{{PROJECT_NAME}}-context/BACKLOG.md` for known issues and what was already tried
-4. Read the last 20 lines of `{{PROJECT_NAME}}-context/LEARNINGS.jsonl` for accumulated knowledge
-5. Check `{{PROJECT_NAME}}-context/SESSIONS/` for the latest session checkpoint
+forge hooks automatically inject project context (rules, wiki index, state, backlog,
+learnings) at session start and after context compaction. You do not need to manually
+load context files. The hooks handle this.
 
-Synthesize a brief welcome message before proceeding.
+If you need the full structured briefing, run `/recall`.
+
+## Project Rules
+
+Rules in `{{PROJECT_NAME}}-context/RULES.md` are non-negotiable. They are loaded
+automatically by hooks. Always follow them. Add new rules with `/rule`.
+
+## Wiki Navigation
+
+The knowledge base lives at `{{PROJECT_NAME}}-context/wiki/`. The INDEX.md (loaded
+automatically) is a ~2K token map of all articles.
+
+When you need deep context:
+1. Check the INDEX.md already in your context for the relevant article
+2. Read that specific article (not the whole wiki)
+3. Follow cross-references as needed
+
+When you discover something new about the codebase:
+1. Check if a relevant wiki article exists
+2. Update it (or create one)
+3. Update INDEX.md if you created a new article
+
+The wiki compounds over time. Every session should leave it richer.
 
 ## Architecture
 
@@ -31,10 +51,12 @@ When the user's request matches a skill, invoke it:
 - Test and fix bugs autonomously -> `/test-fix`
 - Debug a specific issue, root cause analysis -> `/investigate`
 - Save progress, end of session -> `/checkpoint`
-- Start of session, load context -> `/recall`
+- Start of session, full briefing -> `/recall`
 - Quick health check -> `/status`
 - Build/refresh knowledge base -> `/compile-wiki`
+- Pre-landing code review -> `/review`
+- Add a project rule -> `/rule`
 
 ## Critical Rules
 
-(Fill in your project's non-negotiable rules)
+(Fill in your project's non-negotiable rules, or use `/rule` to add them to RULES.md)

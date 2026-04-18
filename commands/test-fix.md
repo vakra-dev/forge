@@ -1,3 +1,7 @@
+---
+description: Autonomous test, investigate, fix, and verify loop
+---
+
 # /test-fix -- Autonomous Test, Investigate, Fix, Verify Loop
 
 You are an **autonomous QA and bug-fix engineer** running a complete test-fix cycle.
@@ -12,7 +16,7 @@ decisions about what to investigate and how to fix it. You stop ONLY when:
 - You're blocked on something that needs human input
 
 This skill combines the /investigate methodology (iron law: no fixes without root cause)
-with a test-driven loop and self-regulation heuristics adapted from gstack's /qa.
+with a test-driven loop and self-regulation heuristics.
 
 **Your mindset:** You're a senior engineer left alone with the test suite on a Friday
 afternoon. You're methodical, you don't guess, you commit atomically, and you know
@@ -112,115 +116,211 @@ Check: when was /test-fix last run? What was the outcome?
 
 ---
 
+## Phase 0: Allocate run directory and supervise services
+
+`/test-fix` is the supervisor for this run. It owns the lifecycle of the
+services it tests. Every run gets its own subdirectory under
+`{project}-context/raw/test-fix/<run-id>/` containing:
+
+- `{service}.log`        -- stderr from each service started by this run
+- `test-runner.log`      -- stdout+stderr from the test harness
+- `started.json`         -- which services this run started, with their PIDs
+- `results.json`         -- copy of test results at end of run
+
+This isolation makes integration debugging vastly easier. Instead of grepping
+shared log files, you have one directory per test run with all services' logs
+stitched to the same timeline as the test output.
+
+### 0a. Allocate the run directory
+
+```bash
+CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
+RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)
+RUN_DIR="${CONTEXT_DIR}raw/test-fix/${RUN_ID}"
+mkdir -p "$RUN_DIR"
+echo "RUN_DIR: $RUN_DIR"
+echo "RUN_ID:  $RUN_ID"
+```
+
+Export `RUN_DIR` and `RUN_ID` so subsequent phases can reference them. Every
+log path in the rest of this skill is keyed off `$RUN_DIR`.
+
+### 0b. Read service configuration from CLAUDE.md
+
+Parse CLAUDE.md (or the wiki architecture overview) to discover which services
+exist, what ports they run on, and how to start them:
+
+```bash
+echo "=== SERVICE CONFIG ==="
+cat CLAUDE.md 2>/dev/null | grep -A 2 "localhost\|:60\|:80\|:30\|port\|Port" || echo "No service config in CLAUDE.md"
+```
+
+Build a service list from CLAUDE.md. For each service, you need:
+- **Name:** identifier (e.g., "backend-api")
+- **Port:** what port it listens on
+- **Health URL:** how to check if it's up (e.g., `http://localhost:8001/health`)
+- **Start command:** how to start it (e.g., `cd backend-api && npm run dev`)
+- **Repo directory:** which directory it lives in
+
+If CLAUDE.md doesn't have start commands, check each repo's `package.json`
+for `dev` or `start` scripts, or `Cargo.toml` for binary targets.
+
+### 0c. Decide which services need to be started
+
+Probe each service from the list. Anything already running stays running.
+Anything DOWN gets started by `/test-fix` with its stderr redirected into
+the run dir.
+
+```bash
+# For each service discovered in 0b, check its health endpoint:
+# curl -sf http://localhost:{port}/health >/dev/null 2>&1
+# Classify as ADOPTED (already running) or TO_START (needs starting)
+```
+
+### 0d. Start the services that need starting
+
+Each service is started in the background with its stderr redirected to its
+run-scoped log file. Capture the PID so we can clean up at the end.
+
+**Check LEARNINGS.jsonl for operational quirks** (e.g., specific Node version
+required, env vars that must be set, startup ordering dependencies).
+
+```bash
+start_service() {
+  local name=$1
+  local cwd=$2
+  local cmd=$3
+  local logfile="${RUN_DIR}/${name}.log"
+
+  echo "Starting ${name}..."
+  ( cd "$cwd" && eval "$cmd" ) >>"$logfile" 2>&1 &
+
+  local pid=$!
+  echo "  ${name} pid=${pid}, log=${logfile}"
+  # Record PID for cleanup
+}
+```
+
+### 0e. Wait for services to become ready
+
+Poll each started service's health endpoint for up to 60 seconds:
+
+```bash
+wait_for_health() {
+  local name=$1
+  local url=$2
+  local deadline=$(( $(date +%s) + 60 ))
+
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if curl -sf "$url" >/dev/null 2>&1; then
+      echo "  ${name} ready"
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "  ${name} FAILED to come up within 60s"
+  echo "  Last 30 lines of log:"
+  tail -30 "${RUN_DIR}/${name}.log"
+  return 1
+}
+```
+
+If a started service fails to come up, dump the last 30 lines of its log,
+mark the run as **BLOCKED** with a pointer to the full log file under
+`$RUN_DIR`, and STOP. Do NOT proceed to Phase 1. The rest of the phases
+will all fail with connection errors and that's not useful data.
+
+### 0f. Record what this run started
+
+Drop a manifest into the run dir so future debugging knows which processes
+this run was responsible for:
+
+```bash
+# Write started.json with:
+# - run_id, started_at timestamp
+# - adopted: [list of services that were already running]
+# - started: {service_name: pid, ...} for services we started
+```
+
+---
+
 ## Phase 1: Pre-flight Checks
 
 Before running any tests, verify the environment is ready.
 
 ### 1a. Check stack health
 
+For each service discovered in Phase 0b, verify it's actually UP:
+
 ```bash
 echo "=== PRE-FLIGHT: SERVICE HEALTH ==="
-echo ""
-echo -n "Reader engine (6003): "
-ENGINE=$(curl -sf http://localhost:6003/health 2>/dev/null)
-if [ $? -eq 0 ]; then
-  echo "UP -- $ENGINE"
-else
-  echo "DOWN"
-fi
-
-echo -n "Reader API    (6002): "
-API=$(curl -sf http://localhost:6002/health 2>/dev/null)
-if [ $? -eq 0 ]; then
-  echo "UP -- $API"
-else
-  echo "DOWN"
-fi
-
-echo -n "API ready:           "
-READY=$(curl -sf http://localhost:6002/ready 2>/dev/null)
-if [ $? -eq 0 ]; then
-  echo "YES -- $READY"
-else
-  echo "NO"
-fi
-
-echo -n "MongoDB:             "
-mongosh --eval "db.runCommand({ping:1})" --quiet 2>/dev/null | head -1 || echo "DOWN"
+# For each service in the service list:
+#   curl -sf http://localhost:{port}/health
+#   Report UP or DOWN with response body
 ```
 
-**If Reader engine is DOWN:** STOP. Report BLOCKED:
-"Reader engine is not running on :6003. Start it first: `cd reader && npx tsx src/cli/index.ts start --pool-size 3`"
+Also check shared dependencies (database, cache, queue) as listed in CLAUDE.md.
 
-**If Reader API is DOWN:** STOP. Report BLOCKED:
-"Reader API is not running on :6002. Start it first: `cd reader-api && npm run dev`"
+**If any required service is DOWN at this point**, that means Phase 0 either
+failed to start it or it crashed after starting. Phase 0 is the supervisor
+phase and is supposed to start anything that's down. If services are still
+DOWN here, dump the last 30 lines of the corresponding log file under
+`$RUN_DIR` and report BLOCKED with the log path. DO NOT instruct the user to
+"start it first." We ARE the supervisor, and if startup failed there's a
+real reason that needs investigation, not a user nudge.
 
-**If API is not ready (engine or MongoDB dependency is down):** Report the specific
-dependency that's failing from the /ready response. Do NOT proceed with tests -- they
-will all fail with connection errors, which is not useful information.
+### 1b. Check required environment variables
 
-### 1b. Check API key
+Check CLAUDE.md for any environment variables required to run tests (API keys,
+database URLs, config flags):
 
 ```bash
 echo ""
-echo "=== PRE-FLIGHT: API KEY ==="
-if [ -n "${READER_API_KEY:-}" ]; then
-  echo "API key set: ...${READER_API_KEY: -4}"
-  # Verify it works
-  CREDITS=$(curl -sf http://localhost:6002/v1/usage/credits -H "x-api-key: $READER_API_KEY" 2>/dev/null)
-  if [ $? -eq 0 ]; then
-    echo "API key valid: $CREDITS"
-  else
-    echo "API key INVALID or credits endpoint not accessible"
-  fi
-else
-  echo "API key NOT SET"
-fi
+echo "=== PRE-FLIGHT: ENVIRONMENT ==="
+# Check for required env vars mentioned in CLAUDE.md or test config
+# Report which are set and which are missing
 ```
 
-**If no API key:** STOP. Report NEEDS_CONTEXT:
-"Set READER_API_KEY environment variable. Create one with: `cd reader-api && npm run seed`"
-
-**If API key is invalid:** STOP. Report NEEDS_CONTEXT:
-"API key is invalid (credits check failed). Verify the key or seed a new one."
+**If required env vars are missing:** STOP. Report NEEDS_CONTEXT with the
+specific variable names and how to set them (from CLAUDE.md instructions).
 
 ### 1c. Check test harness exists
+
+Look for test configuration in CLAUDE.md (Testing section) or detect it:
 
 ```bash
 echo ""
 echo "=== PRE-FLIGHT: TEST HARNESS ==="
-if [ -f tests/e2e/run-scrape-suite.ts ]; then
-  echo "E2E harness: FOUND"
-  echo "URL fixtures: $(grep -c 'url:' tests/e2e/url-fixtures.ts 2>/dev/null || echo '?') URLs"
-else
-  echo "E2E harness: NOT FOUND"
-fi
+# Check CLAUDE.md for test commands
+grep -A 5 "Testing\|test" CLAUDE.md 2>/dev/null | head -20
+
+# Auto-detect test frameworks across repos
+for dir in */; do
+  [ -f "$dir/vitest.config.ts" ] && echo "  ${dir}: vitest"
+  [ -f "$dir/jest.config.ts" ] || [ -f "$dir/jest.config.js" ] && echo "  ${dir}: jest"
+  [ -f "$dir/Cargo.toml" ] && echo "  ${dir}: cargo test"
+  [ -f "$dir/pytest.ini" ] || [ -f "$dir/pyproject.toml" ] && echo "  ${dir}: pytest"
+done
+
+# Check for e2e/integration test suites
+find . -maxdepth 3 -name "*.test.ts" -o -name "*.spec.ts" -o -name "*.e2e.*" 2>/dev/null | head -10
 ```
 
-**If no test harness:** STOP. Report BLOCKED:
-"No e2e test harness found at tests/e2e/run-scrape-suite.ts. The test suite needs to
-be set up first."
+**If no test infrastructure found:** STOP. Report BLOCKED:
+"No test harness found. Check CLAUDE.md for test setup instructions."
 
 ### 1d. Parse arguments
 
 Parse the user's input for flags:
 
-- `/test-fix` -- full suite, all URLs
-- `/test-fix --only-failed` -- re-run only URLs that failed in the last run
-- `/test-fix --category wikipedia` -- only run one category
-- `/test-fix --category ecommerce` -- only Amazon/ecommerce URLs
-- `/test-fix --limit 10` -- limit to N URLs (for quick iteration)
-- `/test-fix --tag tables` -- only URLs tagged with "tables"
+- `/test-fix` -- full suite, all tests
+- `/test-fix --only-failed` -- re-run only tests that failed in the last run
+- `/test-fix --category {name}` -- only run one category/group
+- `/test-fix --limit N` -- limit to N test cases (for quick iteration)
+- `/test-fix --repo {name}` -- only run tests in a specific repo
 
 If no flags provided, default to full suite.
-
-If `--only-failed` is specified and there's no previous run:
-
-```bash
-if [ ! -f tests/e2e/results/latest.json ]; then
-  echo "No previous run found. Running full suite instead of --only-failed."
-fi
-```
 
 ### 1e. Pre-flight summary
 
@@ -241,50 +341,38 @@ Starting test run...
 
 ### 2a. Execute the test runner
 
+Use the test commands from CLAUDE.md (Testing section). Tee the output into
+`$RUN_DIR/test-runner.log` so it stitches to the same timeline as the
+per-service logs from Phase 0.
+
 ```bash
-echo "=== RUNNING E2E SUITE ==="
+echo "=== RUNNING TEST SUITE ==="
 echo "Start time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "Logging to: ${RUN_DIR}/test-runner.log"
 echo ""
-READER_API_KEY="${READER_API_KEY}" npx tsx tests/e2e/run-scrape-suite.ts {flags}
+# Run the test command from CLAUDE.md, e.g.:
+# cd {repo} && npx vitest run 2>&1 | tee "${RUN_DIR}/test-runner.log"
+# or for e2e:
+# {e2e-command} 2>&1 | tee "${RUN_DIR}/test-runner.log"
 echo ""
 echo "End time: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
-Wait for the suite to complete. This can take 3-5 minutes for the full suite
-(~150 URLs at 1 req/sec). For `--only-failed` it's typically 30-60 seconds.
+Wait for the suite to complete.
 
 ### 2b. Read the results
 
-```bash
-echo "=== RESULTS ==="
-if [ -f tests/e2e/results/latest.json ]; then
-  node -e "
-    const r = JSON.parse(require('fs').readFileSync('tests/e2e/results/latest.json','utf8'));
-    console.log('Timestamp:  ' + r.timestamp);
-    console.log('Total:      ' + r.config.totalUrls);
-    console.log('Pass:       ' + r.summary.pass + ' (' + ((r.summary.pass/r.config.totalUrls)*100).toFixed(1) + '%)');
-    console.log('Partial:    ' + r.summary.partial);
-    console.log('Fail:       ' + r.summary.fail);
-    console.log('Crash:      ' + r.summary.crash);
-    console.log('Flaky:      ' + (r.summary.flaky || 0));
-    console.log('Avg resp:   ' + r.summary.avgResponseMs + 'ms');
-    console.log('P95 resp:   ' + r.summary.p95ResponseMs + 'ms');
-    console.log('');
+Parse the test runner output. Extract:
+- Total tests run
+- Pass count and percentage
+- Fail count (with test names / descriptions)
+- Error messages for each failure
 
-    // List ALL non-pass results
-    var issues = r.results.filter(function(x) { return x.status !== 'pass'; });
-    console.log('Non-pass results (' + issues.length + '):');
-    issues.forEach(function(f, i) {
-      var flaky = f.knownFlaky ? ' [KNOWN-FLAKY]' : '';
-      console.log('  ' + (i+1) + '. [' + f.status.toUpperCase() + '] ' + f.url + flaky);
-      if (f.errorCode) console.log('     Error: ' + f.errorCode + ': ' + (f.errorMessage || '').slice(0, 100));
-      if (f.qualityIssues && f.qualityIssues.length > 0) console.log('     Issues: ' + f.qualityIssues.join(', '));
-    });
-  " 2>/dev/null
-else
-  echo "ERROR: No results file generated"
-fi
-```
+For structured test output (JSON, JUnit XML), parse it programmatically.
+For plain text output (vitest, cargo test, pytest), parse the summary line
+and individual failure blocks.
+
+List ALL non-passing results with their error messages.
 
 ### 2c. If all tests pass
 
@@ -318,7 +406,7 @@ From the results, build a prioritized list of failures to investigate:
 ### 3b. Filter out known-flaky and already-documented
 
 **Skip known-flaky URLs:** If a result has `knownFlaky: true` in the test fixtures,
-AND the backlog/wiki documents why it's flaky (e.g., "Amazon bot detection"), SKIP it.
+AND the backlog/wiki documents why it's flaky (e.g., "external API rate limiting"), SKIP it.
 Do not waste investigation time on known external issues.
 
 **Skip already-investigated bugs:** If wiki/bugs/ has an article for this failure AND
@@ -400,41 +488,31 @@ grep -i "{error-code-or-keyword}" "${CONTEXT_DIR}LEARNINGS.jsonl" 2>/dev/null ||
 
 **Step 1: Trace the error.**
 
-Which service is returning this error? The error code tells you:
-- `scrape_timeout` (504) -> reader engine (browser/page timeout)
-- `upstream_unavailable` (502) -> reader engine is unreachable from API
-- `internal_error` (500) -> unexpected error in reader-api or engine
-- `rate_limited` (429) -> reader-api rate limiter (this is test infrastructure, not a bug)
-- `invalid_request` (400) -> request validation (likely test harness issue)
-- `url_blocked` (403) -> SSRF protection (test harness sending bad URLs)
-- HTTP 0 / connection error -> service is down or crashed
+Which service is returning this error? Use the error type to narrow down:
+- HTTP 5xx -> server-side error in the responding service
+- HTTP 4xx -> client-side error (request validation, auth, rate limiting)
+- Connection refused / timeout -> target service is down or overloaded
+- Panic / segfault / process exit -> crash in a compiled dependency (Rust, Go, C)
+- TypeError / null reference -> missing guard in application code
 
-For quality issues (partial results):
-- `markdown_too_short` -> supermarkdown or engine not extracting enough content
-- `missing_title` -> metadata extraction issue in engine
-- `panic_detected` -> supermarkdown Rust panic (CRITICAL)
-- `navigation_boilerplate_detected` -> onlyMainContent not stripping nav
+**For multi-repo systems, trace across service boundaries.** A 502 from
+service A might mean service B (which A depends on) is down. Check the
+integrations article in the wiki to understand the call chain.
 
 **Step 2: Read the relevant code.**
 
 Based on the error trace, read the source files along the error path.
+Use the wiki architecture articles to identify which files to read.
 
-For reader-api errors:
 ```bash
-# Find error handling for the specific error code
-grep -rn "{error_code}" reader-api/src/ 2>/dev/null | head -10
-```
+# Find where the error code is defined or thrown
+grep -rn "{error_code}\|{error_message}" */src/ 2>/dev/null | grep -v node_modules | head -10
 
-For engine errors:
-```bash
-# Find the scraping pipeline
-grep -rn "scrape\|timeout\|error" reader/src/engine/ reader/src/scrape/ 2>/dev/null | head -15
-```
+# Trace the call chain from the failing endpoint
+grep -rn "{endpoint_path}\|{function_name}" */src/ 2>/dev/null | grep -v node_modules | head -10
 
-For supermarkdown panics:
-```bash
-# Find panic-prone code
-grep -rn "unwrap()\|panic!\|expect(" supermarkdown/src/ 2>/dev/null | head -10
+# For panics in compiled code
+grep -rn "unwrap()\|panic!\|expect(" */src/ 2>/dev/null | grep -v target | head -10
 ```
 
 **Step 3: Form a hypothesis.**
@@ -451,7 +529,7 @@ Once root cause is CONFIRMED:
 
 1. **Smallest possible change.** Do not refactor. Do not improve. Fix the bug.
 2. **Stay in scope.** Only modify the files needed for THIS fix. If the bug is in
-   `reader-api/src/middleware/error-handler.ts`, do NOT also fix `reader/src/engine/pool.ts`
+   `backend/src/middleware/error-handler.ts`, do NOT also fix `worker/src/processor.ts`
    even if you notice it could be improved.
 3. **Match existing style.** Look at how errors are handled in surrounding code. Follow
    the same pattern.
@@ -475,8 +553,8 @@ cd ..
 #### 4f. Write a regression test (when appropriate)
 
 Write a regression test if:
-- The fix is in reader-api (unit tests exist, easy to add)
-- The fix is in supermarkdown (cargo test, easy to add)
+- The repo has an existing test suite (vitest, jest, cargo test, pytest)
+- The fix is in a testable module (not a config change)
 - The fix is non-trivial (not a one-line config change)
 
 Do NOT write a regression test if:
@@ -501,18 +579,16 @@ Increment `revert_count`. Log what happened. Move to the next failure.
 
 #### 4g. Verify the fix
 
-Re-run ONLY the failing URL to confirm it now passes:
+Re-run ONLY the failing test to confirm it now passes:
 
 ```bash
-# Test the specific URL that was failing
-curl -sf -X POST http://localhost:6002/v1/read \
-  -H "x-api-key: $READER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"url":"{failing-url}","cache":false}' \
-  -w "\n\nHTTP: %{http_code}\nTime: %{time_total}s\n" 2>/dev/null | head -50
+# Run just the specific failing test
+cd {repo} && {test-command} --filter "{test-name}" 2>&1 | tail -20
 ```
 
-**If the URL now succeeds:** Great. `fix_count++`. Move to the next failure.
+Or for integration tests, replay the specific request that was failing.
+
+**If the test now passes:** Great. `fix_count++`. Move to the next failure.
 
 **If the URL still fails:**
 - Is it the SAME error? Your fix didn't work. Revert, try a different approach.
@@ -617,60 +693,21 @@ After all targeted fixes are done (or cap/WTF reached), run the FULL suite:
 
 ### 6a. Run full suite
 
+Re-run the complete test suite across all repos:
+
 ```bash
 echo "=== REGRESSION CHECK: FULL SUITE ==="
-READER_API_KEY="${READER_API_KEY}" npx tsx tests/e2e/run-scrape-suite.ts
+# Run the same test commands from CLAUDE.md used in Phase 2
+# Log output to ${RUN_DIR}/regression-check.log
 ```
 
 ### 6b. Compare with initial run
 
-Read both result files and compare:
+Compare the results from this run with the initial run from Phase 2:
 
-```bash
-echo "=== COMPARING RESULTS ==="
-node -e "
-  const fs = require('fs');
-  const files = fs.readdirSync('tests/e2e/results/').filter(f => f.startsWith('run-')).sort().reverse();
-  if (files.length >= 2) {
-    const latest = JSON.parse(fs.readFileSync('tests/e2e/results/' + files[0], 'utf8'));
-    const previous = JSON.parse(fs.readFileSync('tests/e2e/results/' + files[1], 'utf8'));
-    console.log('BEFORE: pass=' + previous.summary.pass + ' fail=' + previous.summary.fail + ' crash=' + previous.summary.crash);
-    console.log('AFTER:  pass=' + latest.summary.pass + ' fail=' + latest.summary.fail + ' crash=' + latest.summary.crash);
-    console.log('DELTA:  pass ' + (latest.summary.pass > previous.summary.pass ? '+' : '') + (latest.summary.pass - previous.summary.pass));
-
-    // Find regressions (was pass, now not)
-    var prevMap = {};
-    previous.results.forEach(function(r) { prevMap[r.url] = r.status; });
-    var regressions = latest.results.filter(function(r) {
-      return prevMap[r.url] === 'pass' && r.status !== 'pass';
-    });
-    if (regressions.length > 0) {
-      console.log('');
-      console.log('REGRESSIONS (' + regressions.length + '):');
-      regressions.forEach(function(r) {
-        console.log('  [' + r.status.toUpperCase() + '] ' + r.url);
-      });
-    } else {
-      console.log('');
-      console.log('No regressions.');
-    }
-
-    // Find improvements (was fail/crash, now pass)
-    var improvements = latest.results.filter(function(r) {
-      return (prevMap[r.url] === 'fail' || prevMap[r.url] === 'crash') && r.status === 'pass';
-    });
-    if (improvements.length > 0) {
-      console.log('');
-      console.log('IMPROVEMENTS (' + improvements.length + '):');
-      improvements.forEach(function(r) {
-        console.log('  [PASS] ' + r.url + ' (was ' + prevMap[r.url] + ')');
-      });
-    }
-  } else {
-    console.log('Only one run file found. Cannot compare.');
-  }
-" 2>/dev/null
-```
+- Count tests that were passing before and are now failing (REGRESSIONS)
+- Count tests that were failing before and are now passing (IMPROVEMENTS)
+- Report the delta
 
 ### 6c. Handle regressions
 
@@ -746,15 +783,19 @@ If you noticed recurring patterns across multiple failures:
 
 Create `wiki/patterns/{slug}.md`.
 
-### 7e. Update architecture articles
+### 7e. Update architecture and integration articles
 
 If investigation revealed something about how the system works that should be documented:
 
-- Error propagation paths you traced
-- Service dependencies you discovered
+- Error propagation paths you traced across service boundaries
+- Service dependencies you discovered (e.g., "service A returns 502 when service B is down")
 - Code flows you understood during debugging
+- Cross-repo call chains (e.g., "frontend calls backend via SDK, backend calls worker via HTTP")
+- Shared data that's read/written by multiple services
 
-Update the relevant `wiki/architecture/` article.
+Update the relevant `wiki/architecture/` article. **In particular, update
+`wiki/architecture/integrations.md`** with any cross-service paths you traced.
+This is the most valuable debugging artifact for multi-repo systems.
 
 ### 7f. Update INDEX.md
 
@@ -788,11 +829,11 @@ echo '{"ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","skill":"test-fix","type":"TYPE",
 ```
 
 **Examples of valuable test-fix learnings:**
-- type `pitfall`: "curl to engine directly works but going through API adds 500ms overhead from middleware chain" (operational, confidence 8)
-- type `pattern`: "Wikipedia articles with >5 nested tables consistently cause supermarkdown to produce truncated output" (pattern, confidence 9)
-- type `architecture`: "reader-api catches engine ECONNRESET and maps it to upstream_unavailable, but doesn't retry -- adding retry would fix transient failures" (architecture, confidence 7)
-- type `operational`: "running e2e suite with --limit 5 is the fastest way to verify a fix before running full suite" (operational, confidence 10)
-- type `pitfall`: "Amazon /dp/ URLs require stealth proxy but still fail ~40% of the time -- mark as known-flaky, don't investigate further" (pitfall, confidence 9)
+- type `pitfall`: "calling service-b directly works but going through service-a adds 500ms from middleware chain" (operational, confidence 8)
+- type `pattern`: "deeply nested HTML structures consistently cause the parser to produce truncated output" (pattern, confidence 9)
+- type `architecture`: "backend catches worker ECONNRESET and maps it to 502, but doesn't retry. Adding retry would fix transient failures" (architecture, confidence 7)
+- type `operational`: "running tests with --limit 5 is the fastest way to verify a fix before running full suite" (operational, confidence 10)
+- type `architecture`: "frontend calls backend via internal SDK, so errors are wrapped in SDKError, not raw HTTP status codes" (architecture, confidence 9)
 
 ---
 
@@ -804,6 +845,52 @@ echo '{"skill":"test-fix","event":"completed","ts":"'$(date -u +%Y-%m-%dT%H:%M:%
 ```
 
 Replace all placeholders with actual values.
+
+---
+
+## Phase 9.5: Archive run artefacts and tear down supervised services
+
+Before the final commit, snapshot everything from this run into the run dir
+so it's a self-contained record. Then stop the services that this run
+started. Never touch a service we adopted from the user's existing stack.
+
+### 9.5a. Snapshot test results into the run dir
+
+```bash
+# Copy the latest test results (JSON, XML, or text) into the run dir
+# so the run directory is a self-contained record
+```
+
+### 9.5b. Generate a one-line index entry
+
+Tell the user (and future test-fix runs) where to find this run's artefacts.
+
+```bash
+echo ""
+echo "Run artefacts saved to: ${RUN_DIR}"
+ls -la "$RUN_DIR"
+```
+
+### 9.5c. Tear down services we started
+
+Only kill processes whose PID is recorded in `started.json`. Never touch a
+service we adopted from the user's existing stack.
+
+```bash
+# Read started.json for PIDs this run started
+# Send SIGTERM to each, wait up to 10s, then SIGKILL if needed
+# Never kill adopted services
+```
+
+### 9.5d. Append to the test-fix index
+
+Maintain a one-file index of every test-fix run for quick navigation.
+
+```bash
+INDEX_FILE="${CONTEXT_DIR}raw/test-fix/index.jsonl"
+mkdir -p "${CONTEXT_DIR}raw/test-fix"
+echo "{\"run_id\":\"${RUN_ID}\",\"finished_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"pass\":PASS_COUNT,\"total\":TOTAL_COUNT,\"dir\":\"${RUN_DIR}\"}" >> "$INDEX_FILE"
+```
 
 ---
 
@@ -937,8 +1024,9 @@ NEXT STEPS
 9. **Never merge without user approval.** Create commits on the current branch. The
    user reviews and merges.
 
-10. **Known-flaky is not a bug.** Amazon returning 403 is Amazon's bot detection, not
-    our code. Don't waste time "fixing" external systems.
+10. **Known-flaky is not a bug.** External services returning errors due to their own
+    restrictions (rate limiting, bot detection, geo-blocking) are not our code. Don't
+    waste time "fixing" external systems.
 
 11. **Scope lock per bug.** When investigating a specific failure, stay in the relevant
     repo and directory. Don't wander into other repos unless the trace leads you there.

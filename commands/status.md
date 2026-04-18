@@ -1,3 +1,7 @@
+---
+description: Check health of all services, repos, and tests across the workspace
+---
+
 # /status -- Workspace Health Dashboard
 
 You are a **Staff SRE running the morning health check**. Your job is to check every
@@ -76,7 +80,7 @@ Count the active issues. Note their severities.
 ### P5. Read recent learnings
 
 These may contain operational knowledge relevant to the health check (e.g., "MongoDB
-requires brew services start" or "reader engine needs --pool-size 3"):
+requires brew services start" or "worker needs --pool-size 3"):
 
 ```bash
 CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
@@ -123,86 +127,39 @@ If not, fall back to checking common ports.
 
 ### 1b. Hit every health endpoint
 
-For EACH service identified in CLAUDE.md (or common ports if no CLAUDE.md):
+For EACH service identified in CLAUDE.md, check its health endpoint:
 
 ```bash
 echo "=== SERVICE HEALTH CHECKS ==="
 echo ""
 
-# Check each known service
-# For each service, check both /health and /ready if applicable
-# Capture response body (not just status code) for richer diagnostics
+# For each service from CLAUDE.md, run:
+check_service() {
+  local name=$1
+  local url=$2
 
-echo "--- Reader Engine (6003) ---"
-ENGINE_HEALTH=$(curl -sf http://localhost:6003/health 2>/dev/null)
-ENGINE_CODE=$?
-if [ $ENGINE_CODE -eq 0 ]; then
-  echo "  Health: UP"
-  echo "  Response: $ENGINE_HEALTH"
-else
-  echo "  Health: DOWN (curl exit code: $ENGINE_CODE)"
-fi
-echo ""
+  echo "--- ${name} ---"
+  RESPONSE=$(curl -sf "$url" 2>/dev/null)
+  if [ $? -eq 0 ]; then
+    echo "  Health: UP"
+    echo "  Response: $RESPONSE"
+  else
+    echo "  Health: DOWN"
+  fi
+  echo ""
+}
 
-echo "--- Reader API (6002) ---"
-API_HEALTH=$(curl -sf http://localhost:6002/health 2>/dev/null)
-API_CODE=$?
-if [ $API_CODE -eq 0 ]; then
-  echo "  Health: UP"
-  echo "  Response: $API_HEALTH"
-else
-  echo "  Health: DOWN (curl exit code: $API_CODE)"
-fi
-echo ""
+# Example: check_service "Backend API (8001)" "http://localhost:8001/health"
+# Run for every service listed in CLAUDE.md's Architecture section
+```
 
-echo "--- Reader API Readiness (6002) ---"
-API_READY=$(curl -sf http://localhost:6002/ready 2>/dev/null)
-READY_CODE=$?
-if [ $READY_CODE -eq 0 ]; then
-  echo "  Ready: YES"
-  echo "  Response: $API_READY"
-else
-  echo "  Ready: NO (curl exit code: $READY_CODE)"
-fi
-echo ""
+Also check shared dependencies (databases, caches, queues):
 
-echo "--- Cloud API (6001) ---"
-CLOUD_HEALTH=$(curl -sf http://localhost:6001/health 2>/dev/null)
-CLOUD_CODE=$?
-if [ $CLOUD_CODE -eq 0 ]; then
-  echo "  Health: UP"
-  echo "  Response: $CLOUD_HEALTH"
-else
-  echo "  Health: DOWN (curl exit code: $CLOUD_CODE)"
-fi
-echo ""
-
-echo "--- Cloud App (6006) ---"
-APP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:6006 2>/dev/null || echo "000")
-if [ "$APP_STATUS" != "000" ]; then
-  echo "  Health: UP (HTTP $APP_STATUS)"
-else
-  echo "  Health: DOWN"
-fi
-echo ""
-
-echo "--- Docs (6005) ---"
-DOCS_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:6005 2>/dev/null || echo "000")
-if [ "$DOCS_STATUS" != "000" ]; then
-  echo "  Health: UP (HTTP $DOCS_STATUS)"
-else
-  echo "  Health: DOWN"
-fi
-echo ""
-
-echo "--- MongoDB (27017) ---"
-MONGO_PING=$(mongosh --eval "db.runCommand({ping:1})" --quiet 2>/dev/null | head -1)
-if echo "$MONGO_PING" | grep -q "ok"; then
-  echo "  Health: UP"
-  echo "  Response: $MONGO_PING"
-else
-  echo "  Health: DOWN or not installed"
-fi
+```bash
+# Check database connectivity (adapt to your database)
+# MongoDB: mongosh --eval "db.runCommand({ping:1})" --quiet
+# PostgreSQL: pg_isready -h localhost -p 5432
+# Redis: redis-cli ping
 ```
 
 ### 1c. Classify each service
@@ -273,70 +230,44 @@ done
 
 ## Step 3: Check Test Results
 
-### 3a. E2E test results
+### 3a. Test results
+
+Check for recent test results. Look for:
+- JSON result files (e.g., `tests/results/latest.json`)
+- JUnit XML reports
+- Coverage reports
+- Test output logs in the context directory
 
 ```bash
-echo "=== E2E TEST RESULTS ==="
-if [ -f tests/e2e/results/latest.json ]; then
-  echo "File: tests/e2e/results/latest.json"
-  node -e "
-    const fs = require('fs');
-    const r = JSON.parse(fs.readFileSync('tests/e2e/results/latest.json', 'utf8'));
-    console.log('Timestamp:    ' + r.timestamp);
-    console.log('Filter:       ' + (r.config.filter || 'all'));
-    console.log('Total URLs:   ' + r.config.totalUrls);
-    console.log('Pass:         ' + r.summary.pass);
-    console.log('Partial:      ' + r.summary.partial);
-    console.log('Fail:         ' + r.summary.fail);
-    console.log('Crash:        ' + r.summary.crash);
-    console.log('Flaky:        ' + (r.summary.flaky || 0));
-    console.log('Avg response: ' + r.summary.avgResponseMs + 'ms');
-    console.log('P95 response: ' + r.summary.p95ResponseMs + 'ms');
-    console.log('Duration:     ' + (r.summary.totalDurationMs/1000).toFixed(1) + 's');
+echo "=== TEST RESULTS ==="
+# Check for test result files across repos
+find . -maxdepth 4 \( -name "latest.json" -o -name "*.junit.xml" -o -name "test-results*" \) \
+  -not -path "*/node_modules/*" 2>/dev/null | head -10
 
-    // Show top failures
-    var failures = r.results.filter(function(x) { return x.status === 'fail' || x.status === 'crash'; });
-    if (failures.length > 0) {
-      console.log('');
-      console.log('Top failures:');
-      failures.slice(0, 10).forEach(function(f) {
-        console.log('  [' + f.status.toUpperCase() + '] ' + f.url);
-        if (f.errorCode) console.log('    Error: ' + f.errorCode + ' - ' + (f.errorMessage || '').slice(0, 80));
-        if (f.qualityIssues && f.qualityIssues.length > 0) console.log('    Issues: ' + f.qualityIssues.join(', '));
-      });
-      if (failures.length > 10) console.log('  ... and ' + (failures.length - 10) + ' more');
-    }
-  " 2>/dev/null || echo "  Could not parse e2e results JSON"
-else
-  echo "  No e2e results found at tests/e2e/results/latest.json"
-  echo "  Run: READER_API_KEY=rdr_xxx npx tsx tests/e2e/run-scrape-suite.ts"
-fi
+# Check for recent vitest/jest/cargo test output
+for dir in */; do
+  [ -d "$dir/coverage" ] && echo "  ${dir}: coverage report exists"
+done
 ```
 
-### 3b. Unit test results (check if recently run)
+If structured results exist, parse them for pass/fail counts and top failures.
+If no results exist, note it: "No test results found. Run tests via CLAUDE.md commands."
 
-For each repo with a test framework, check if tests have been run recently:
+### 3b. Per-repo test status
+
+For each repo in the workspace, detect the test framework:
 
 ```bash
 echo ""
-echo "=== UNIT TEST STATUS ==="
-for dir in reader reader-api reader-cloud-api supermarkdown; do
-  if [ -d "$dir" ]; then
-    echo "--- ${dir} ---"
-    # Check for test config
-    if [ -f "$dir/vitest.config.ts" ] || [ -f "$dir/vitest.config.js" ]; then
-      echo "  Framework: vitest"
-      echo "  Run: cd $dir && npx vitest run"
-    elif [ -f "$dir/Cargo.toml" ]; then
-      echo "  Framework: cargo test"
-      echo "  Run: cd $dir && cargo test"
-    else
-      echo "  No test framework detected"
-    fi
-    # Check for recent test output
-    if [ -d "$dir/node_modules/.vitest" ] || [ -d "$dir/coverage" ]; then
-      echo "  Last run: exists (check timestamp)"
-    fi
+echo "=== PER-REPO TEST STATUS ==="
+for dir in */; do
+  if [ -d "$dir" ] && [ "$dir" != "forge/" ] && [[ ! "$dir" == *-context/ ]]; then
+    echo "--- ${dir%/} ---"
+    [ -f "$dir/vitest.config.ts" ] || [ -f "$dir/vitest.config.js" ] && echo "  Framework: vitest"
+    [ -f "$dir/jest.config.ts" ] || [ -f "$dir/jest.config.js" ] && echo "  Framework: jest"
+    [ -f "$dir/Cargo.toml" ] && echo "  Framework: cargo test"
+    [ -f "$dir/pytest.ini" ] || [ -f "$dir/pyproject.toml" ] && echo "  Framework: pytest"
+    [ -d "$dir/coverage" ] && echo "  Coverage report: exists"
     echo ""
   fi
 done
@@ -358,11 +289,11 @@ If STATE.md has previous test results, compare:
 
 For each known issue in BACKLOG.md:
 
-1. **Check if the affected service is running.** If the issue says "reader engine panics on
-   nested tables" but the reader engine is DOWN, note: "Cannot verify -- service is down."
+1. **Check if the affected service is running.** If the issue says "worker panics on
+   malformed input" but the worker is DOWN, note: "Cannot verify -- service is down."
 
-2. **Check if any test failures correspond to backlog items.** If BACKLOG says "Amazon pages
-   return 403" and the e2e results show amazon.com failures, they're the same issue.
+2. **Check if any test failures correspond to backlog items.** If BACKLOG says "external
+   API returns 403" and the test results show the same failures, they're the same issue.
 
 3. **Check for NEW issues.** If the health check found problems not in the backlog, these
    are new issues that should be flagged prominently.
@@ -382,29 +313,23 @@ Follow this EXACT format:
 WORKSPACE HEALTH DASHBOARD
 ════════════════════════════════════════════════════════════════
 
-Project:     {from context directory name, e.g., "reader"}
+Project:     {from context directory name}
 Timestamp:   {current ISO timestamp}
 Last check:  {timestamp from STATE.md, or "first check"}
 
 SERVICES
 ────────────────────────────────────────────────────
-  Reader Engine  (6003)  ██ UP       {response summary}
-  Reader API     (6002)  ██ UP       {response summary}
-  API Ready      (6002)  ██ YES      {dependency status}
-  Cloud API      (6001)  ░░ DOWN     --
-  Cloud App      (6006)  ░░ DOWN     --
-  Docs           (6005)  ░░ DOWN     --
-  MongoDB              ██ UP       ping ok
+  {service name}  ({port})  ██ UP       {response summary}
+  {service name}  ({port})  ██ UP       {response summary}
+  {service name}  ({port})  ░░ DOWN     --
+  {database}             ██ UP       ping ok
 
   Summary: {N}/{total} services healthy
 
 REPOS
 ────────────────────────────────────────────────────
-  reader           main     clean     abc1234 "fix: pool timeout" (2026-04-05)
-  reader-api       main     3 dirty   def5678 "feat: batch retry" (2026-04-05)
-  reader-cloud-api main     clean     ghi9012 "chore: update deps" (2026-04-04)
-  supermarkdown    main     clean     jkl3456 "fix: table parsing" (2026-04-03)
-  reader-sdks      main     clean     mno7890 "feat: stream support" (2026-04-02)
+  {repo-name}      {branch}  {clean/N dirty}  {hash} "{commit msg}" ({date})
+  {repo-name}      {branch}  {clean/N dirty}  {hash} "{commit msg}" ({date})
 
   Concerns: {list any dirty repos on main, unpushed commits, etc.}
 
@@ -485,20 +410,16 @@ Updated by: status
 
 ## Services
 
-| Repo | Status | Port | Branch | Last Test | Notes |
-|------|--------|------|--------|-----------|-------|
-| reader (engine) | UP | 6003 | main | -- | Health OK |
-| reader-api | UP | 6002 | main | -- | Health OK, ready OK |
-| reader-cloud-api | DOWN | 6001 | main | -- | Not running |
-| ... | ... | ... | ... | ... | ... |
+| Service | Status | Port | Branch | Notes |
+|---------|--------|------|--------|-------|
+| {name} | UP | {port} | {branch} | {notes} |
+| {name} | DOWN | {port} | {branch} | {notes} |
+| ... | ... | ... | ... | ... |
 
-## E2E Test Results (last run: {timestamp})
-- Total: {N} URLs
+## Test Results (last run: {timestamp})
+- Total: {N} tests
 - Pass: {N} ({percent}%)
 - Fail: {N}
-- Crash: {N}
-- Partial: {N}
-- Avg response: {N}ms
 
 ## Known Critical Issues
 1. [{severity}] {title} -- {status}
@@ -590,9 +511,9 @@ If you find stale content, fix it now. Don't leave it for /compile-wiki.
 
 Reflect on what you discovered during this health check:
 
-- Did you find an operational quirk? (e.g., "MongoDB must be started before reader-api")
-- Did a service fail in an unexpected way? (e.g., "Cloud API returns 500 instead of proper health response")
-- Did you discover a dependency not documented? (e.g., "reader-api /ready checks both MongoDB and engine")
+- Did you find an operational quirk? (e.g., "database must be started before the API")
+- Did a service fail in an unexpected way? (e.g., "service returns 500 instead of proper health response")
+- Did you discover a dependency not documented? (e.g., "API /ready checks both database and worker health")
 - Would any of this save time in a future session?
 
 **If yes, append to LEARNINGS.jsonl.** Use this exact format:
@@ -613,7 +534,7 @@ echo '{"ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","skill":"status","type":"operatio
 - 4-6: You suspect this but haven't fully verified
 
 **Only log genuine discoveries.** Don't log "MongoDB was running" -- that's not a learning.
-DO log "reader-api /ready endpoint checks both MongoDB and engine health, so if engine
+DO log "API /ready endpoint checks both database and worker health, so if the worker
 is down, API reports not ready even though it's running" -- that's useful operational
 knowledge.
 
@@ -666,7 +587,7 @@ Replace the commit message summary with actual numbers.
 
 ## Critical Rules
 
-1. **Read-only on source code.** Never modify files in repos (reader, reader-api, etc.).
+1. **Read-only on source code.** Never modify files in repos.
    Only modify files in the context directory.
 
 2. **Show the full dashboard.** Even if everything is healthy, show the complete table.

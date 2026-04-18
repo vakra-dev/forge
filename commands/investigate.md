@@ -1,11 +1,14 @@
+---
+description: Systematic root cause debugging with no fixes without root cause
+---
+
 # /investigate -- Systematic Root Cause Debugging
 
 You are a **Principal Engineer doing systematic root cause analysis**. You don't guess.
 You don't patch symptoms. You trace the bug from symptom to root cause through careful
 investigation, then apply the minimum fix that eliminates the actual problem.
 
-This skill is adapted from gstack's /investigate methodology. The iron law applies:
-no fixes without root cause investigation first.
+The iron law applies: no fixes without root cause investigation first.
 
 ## Iron Law
 
@@ -142,37 +145,36 @@ the execution path:
 and error handling.
 
 ```bash
-# Find the relevant route
-grep -rn "POST.*v1/read\|router.post.*read" reader-api/src/routes/ 2>/dev/null | head -5
+# Find the relevant route handler
+grep -rn "router.post\|router.get\|app.post\|app.get" */src/routes/ 2>/dev/null | grep -v node_modules | head -10
+
+# Find error handling for the specific error code
+grep -rn "{error_code}" */src/ 2>/dev/null | grep -v node_modules | head -10
 ```
 
-```bash
-# Find error handling
-grep -rn "scrape_timeout\|upstream_unavailable\|internal_error" reader-api/src/ 2>/dev/null | head -10
-```
-
-**For engine errors:** Start at the engine's HTTP handler, trace through the scraping
+**For backend/worker errors:** Start at the entry point, trace through the processing
 pipeline.
 
 ```bash
-# Find the scraping entry point
-grep -rn "async.*scrape\|function.*scrape" reader/src/ 2>/dev/null | head -10
+# Find the processing entry point
+grep -rn "async.*process\|function.*handle" */src/ 2>/dev/null | grep -v node_modules | head -10
 ```
 
-**For supermarkdown panics:** Look at the Rust code, specifically the function that panics.
+**For compiled library panics (Rust, Go, C):** Look at the code that panics.
 
 ```bash
 # Find panic-prone code
-grep -rn "unwrap()\|panic!\|expect(" supermarkdown/src/ 2>/dev/null | head -10
+grep -rn "unwrap()\|panic!\|expect(" */src/ 2>/dev/null | grep -v target | head -10
 ```
 
-**For multi-repo issues:** The bug might cross service boundaries. A 502 from reader-api
-might mean the engine is down. A malformed markdown response might mean supermarkdown
-has a bug. Trace ACROSS repos:
+**For multi-repo issues:** The bug might cross service boundaries. A 502 from service A
+might mean service B (which A calls) is down. An unexpected response format might mean
+a shared library has a bug. **Read `wiki/architecture/integrations.md` first** to
+understand the call chain, then trace ACROSS repos:
 
 ```
-Client -> reader-api (which error code?) -> reader engine (did it respond? what did it return?)
-  -> supermarkdown (did it panic? what was the input HTML?)
+Client -> {service-a} (which error code?) -> {service-b} (did it respond? what did it return?)
+  -> {shared-lib} (did it crash? what was the input?)
 ```
 
 Read ALL files along the path. Use Read tool for full file content when you need to
@@ -181,11 +183,11 @@ understand logic. Use Grep for finding references and tracing calls.
 ### 1c. Check recent changes
 
 ```bash
-# For each potentially affected repo
-for repo in reader reader-api supermarkdown reader-cloud-api; do
-  if [ -d "$repo" ]; then
-    echo "=== $repo recent changes ==="
-    cd "$repo"
+# For each repo in the workspace
+for dir in */; do
+  if [ -d "$dir/.git" ]; then
+    echo "=== ${dir%/} recent changes ==="
+    cd "$dir"
     git log --oneline -20 2>/dev/null
     cd ..
     echo ""
@@ -212,26 +214,17 @@ Before forming any hypothesis, confirm you can trigger the bug:
 **For API issues:**
 
 ```bash
-curl -X POST http://localhost:6002/v1/read \
-  -H "x-api-key: $READER_API_KEY" \
+curl -X {METHOD} http://localhost:{port}/{path} \
   -H "Content-Type: application/json" \
-  -d '{"url": "{problem-url}"}' \
-  -w "\n\nHTTP Status: %{http_code}\nTime: %{time_total}s\n"
-```
-
-**For engine issues:**
-
-```bash
-curl -X POST http://localhost:6003/scrape \
-  -H "Content-Type: application/json" \
-  -d '{"url": "{problem-url}"}' \
+  -H "{auth-header}" \
+  -d '{request-body}' \
   -w "\n\nHTTP Status: %{http_code}\nTime: %{time_total}s\n"
 ```
 
 **For test failures:**
 
 ```bash
-cd {repo} && npx vitest run {test-file} 2>&1 | tail -30
+cd {repo} && {test-command} {test-file} 2>&1 | tail -30
 ```
 
 **If you CANNOT reproduce:**
@@ -254,16 +247,16 @@ web scraping/API systems:
 
 | Pattern | Signature | Where to look |
 |---------|-----------|---------------|
-| **Panic/crash** | "thread panicked", SIGSEGV, process exit | supermarkdown Rust code (unwrap, expect), engine process |
-| **Timeout** | 504, scrape_timeout, "exceeded timeoutMs" | Browser pool (all browsers busy?), proxy (slow?), page (heavy JS?) |
-| **Bot detection** | 403, "Access Denied", captcha, empty body | Proxy tier (datacenter vs residential), user agent, page anti-bot |
+| **Panic/crash** | "thread panicked", SIGSEGV, process exit | Compiled code (unwrap, expect), native bindings |
+| **Timeout** | 504, "exceeded timeout", hung request | Resource pool (all busy?), downstream service (slow?), heavy processing |
+| **External rejection** | 403, "Access Denied", captcha, empty body | External API limits, auth config, rate limiting |
 | **Null propagation** | TypeError, "Cannot read property of undefined" | Missing null guards on optional values in JS/TS |
-| **Integration failure** | Connection refused, ECONNRESET, ECONNREFUSED | Service boundaries (engine down? MongoDB down?) |
-| **State corruption** | Inconsistent data, partial job results | MongoDB (write conflicts?), job status machine |
+| **Integration failure** | Connection refused, ECONNRESET, ECONNREFUSED | Service boundaries (dependency down? database down?) |
+| **State corruption** | Inconsistent data, partial results | Database (write conflicts?), state machine bugs |
 | **Configuration drift** | Works in test, fails live | Env vars (.env missing?), config defaults, service URLs |
-| **Race condition** | Intermittent, timing-dependent | Concurrent browser pool access, async credit deduction |
-| **Memory/resource leak** | Degrading over time, works on restart | Browser pool (not releasing browsers?), event listeners |
-| **HTML edge case** | Specific URLs fail, others don't | Unusual HTML structure (nested tables, iframes, shadow DOM) |
+| **Race condition** | Intermittent, timing-dependent | Concurrent access to shared resources, async operations |
+| **Memory/resource leak** | Degrading over time, works on restart | Connection pools (not releasing?), event listeners, file handles |
+| **Input edge case** | Specific inputs fail, others don't | Unusual data structures, encoding issues, size limits |
 
 ### 2b. Cross-reference with known issues
 
@@ -301,12 +294,12 @@ Based on investigation (Phase 1) and pattern analysis (Phase 2), state your hypo
 **"Root cause hypothesis: {specific, testable claim about what is wrong and why}"**
 
 Examples of GOOD hypotheses:
-- "The `table.rs` recursive descent parser stack-overflows when table nesting exceeds
-  5 levels because there's no depth guard in the `parse_table` function at line 234"
-- "The reader engine's pool runs out of browsers when batch concurrency > pool-size
-  because `acquireBrowser()` in `pool.ts:78` doesn't queue requests, it fails immediately"
+- "The `parser.rs` recursive descent stack-overflows when nesting exceeds 5 levels
+  because there's no depth guard in the `parse_node` function at line 234"
+- "The worker's connection pool runs out when batch concurrency > pool-size because
+  `acquireConnection()` in `pool.ts:78` doesn't queue requests, it fails immediately"
 - "The webhook delivery timeout of 10s is too short for slow receivers, causing
-  `upstream_unavailable` errors in `webhook.ts:145`"
+  502 errors in `webhook.ts:145`"
 
 Examples of BAD hypotheses (too vague):
 - "Something is wrong with the table parsing"
@@ -400,7 +393,7 @@ Once root cause is **CONFIRMED** (not suspected -- confirmed with evidence):
 Identify the narrowest repo and directory containing the fix:
 
 **Ask yourself:**
-- Which repo is the root cause in? (reader? reader-api? supermarkdown?)
+- Which repo is the root cause in?
 - Which directory within that repo? (src/routes/? src/middleware/? src/table.rs?)
 - Can the fix be contained to that directory?
 
@@ -503,11 +496,11 @@ Regression test: {test file path}
 
 Example:
 ```
-fix(supermarkdown): prevent panic on nested tables deeper than 10 levels
+fix(shared-lib): prevent panic on nested structures deeper than 10 levels
 
-Root cause: recursive descent in table.rs:234 had no depth guard, causing
-stack overflow on deeply nested HTML tables (common in Wikipedia).
-Regression test: tests/table_nesting.rs
+Root cause: recursive descent in parser.rs:234 had no depth guard, causing
+stack overflow on deeply nested input structures.
+Regression test: tests/nesting_depth.rs
 ```
 
 ---
@@ -520,11 +513,7 @@ Reproduce the ORIGINAL bug scenario and confirm it's fixed:
 
 ```bash
 # Run the exact same reproduction from Phase 1d
-curl -X POST http://localhost:6002/v1/read \
-  -H "x-api-key: $READER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"url": "{problem-url}"}' \
-  -w "\n\nHTTP Status: %{http_code}\nTime: %{time_total}s\n"
+# (same curl command, same test command, same steps)
 ```
 
 **This is NOT optional.** "The test passes" is not the same as "the bug is fixed."
@@ -639,15 +628,23 @@ already fixed, no need to go through Active first).
 what was tried and why each approach failed. This prevents the next session from
 retrying the same things.
 
-### 7c. Update architecture articles
+### 7c. Update architecture and integration articles
 
 If the investigation revealed something about how the system works that isn't documented:
 
 - A code path you traced that isn't in the architecture article
 - A dependency relationship you discovered
 - A non-obvious behavior that's important for understanding the service
+- **Cross-service call chains you traced during debugging** (e.g., "when service A
+  returns 502, it's because service B's health check failed, which happens when the
+  database connection pool is exhausted")
+- **Error propagation paths** (how an error in one service manifests in another)
+- **Shared state or data** that multiple services read/write
 
-Update the relevant wiki/architecture/ article.
+Update the relevant `wiki/architecture/` article. **In particular, update
+`wiki/architecture/integrations.md`** if you discovered or traced any cross-repo
+interactions. Add the integration path and failure mode to the article so future
+investigations can start from the map instead of re-tracing from scratch.
 
 ### 7d. Create pattern or decision articles
 
@@ -685,10 +682,10 @@ echo '{"ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","skill":"investigate","type":"TYP
 ```
 
 **What to capture (examples):**
-- type `pitfall`: "supermarkdown unwrap() on line 234 panics on malformed HTML -- always use match or if-let instead" (confidence 9)
-- type `architecture`: "reader-api error handler in middleware/error-handler.ts maps engine timeouts to scrape_timeout but misses ECONNRESET which should map to upstream_unavailable" (confidence 8)
-- type `pattern`: "browser pool exhaustion manifests as timeout, not as a pool-full error -- check pool availability first when debugging timeouts" (confidence 7)
-- type `operational`: "to reproduce engine issues, check reader/logs/ for detailed error traces not shown in API response" (confidence 9)
+- type `pitfall`: "shared-lib unwrap() on line 234 panics on malformed input. Always use match or if-let instead" (confidence 9)
+- type `architecture`: "backend error handler maps worker timeouts to 504 but misses ECONNRESET which should map to 502" (confidence 8)
+- type `pattern`: "connection pool exhaustion manifests as timeout, not as a pool-full error. Check pool availability first when debugging timeouts" (confidence 7)
+- type `architecture`: "service-a calls service-b via internal SDK, so raw HTTP errors are wrapped in SDKError. Unwrap before debugging" (confidence 9)
 
 **Confidence calibration:**
 - 10: User stated this explicitly
@@ -760,6 +757,14 @@ cd ..
 
 10. **Scope lock.** Once you know which repo/directory the fix is in, do NOT touch
     anything outside that scope. If you notice unrelated issues, log them and move on.
+
+11. **State facts, not possibilities.** When reporting findings, say "the timeout is
+    caused by X" not "the timeout might be related to X." If you don't know, say
+    "unknown, evidence so far points to X but not confirmed." Take a position and
+    state what would change your mind.
+
+12. **Load RULES.md before investigating.** Read the project rules. They may restrict
+    which files you can modify or which approaches are forbidden.
 
 ---
 

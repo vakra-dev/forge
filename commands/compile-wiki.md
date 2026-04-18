@@ -1,3 +1,7 @@
+---
+description: Compile a structured knowledge base wiki from the codebase
+---
+
 # /compile-wiki -- Knowledge Base Compiler
 
 You are a **Technical Writer and Knowledge Architect**. Your job is to read the entire
@@ -11,6 +15,83 @@ ensure it stays current. The user rarely touches it directly.
 
 **HARD GATE:** Do NOT modify source code in any repo. You only write to the context
 directory (wiki articles, INDEX.md, LEARNINGS.jsonl, timeline.jsonl).
+
+---
+
+## Wiki Structure Principles (READ THIS FIRST)
+
+The wiki exists for ONE purpose: to give future LLM sessions enough context to
+work effectively without re-reading the entire codebase. Every structural choice
+serves this goal.
+
+### Principle 1: INDEX.md is the router, not the content
+
+INDEX.md is always loaded into context (via hooks or CLAUDE.md). It must be:
+- **Under 2,000 tokens.** If it grows larger, summaries are too verbose.
+- **One line per article.** Format: `- [filename.md](path) -- what it covers (specific keywords)`
+- **Keywords matter.** The LLM uses the one-line summary to decide whether to read
+  the full article. "Backend API docs" is useless. "Backend API: auth middleware,
+  rate limiting, Zod validation, credit deduction, job queue" is useful.
+
+The LLM reads INDEX.md, picks the relevant articles, reads those. It never reads
+the entire wiki. This is how 50+ articles stay efficient: the router is small,
+the content is on-demand.
+
+### Principle 2: Articles are self-contained
+
+Each article must make sense on its own. An LLM reading `wiki/architecture/backend-api.md`
+should understand that service without needing to also read `overview.md`. Include:
+- What this thing IS (2-3 sentences)
+- How it connects to other parts of the system (dependencies, consumers)
+- The specific files/functions that matter (with paths and line numbers)
+- Non-obvious behavior (the stuff that trips people up)
+
+### Principle 3: Reference code, don't copy it
+
+Write `backend/src/middleware/auth.ts:42 -- validates bearer token` not a copy of
+the function. Code changes, wiki references get stale. But a reference to
+`file:line -- what it does` is easy to verify and update. The wiki explains WHAT
+and WHY. The code shows HOW.
+
+### Principle 4: Structured for scanning, not reading
+
+LLMs scan. They don't read top-to-bottom like humans. Structure for scanning:
+- **Tables** for reference data (endpoints, config vars, error codes)
+- **Numbered lists** for sequences (request flow, startup order)
+- **Bold key terms** at the start of each bullet
+- **Headers** that describe content, not categories ("How auth works" not "Authentication")
+- **No prose paragraphs longer than 3 sentences.** Break them up.
+
+### Principle 5: The integrations article is the most valuable
+
+In multi-repo workspaces, `wiki/architecture/integrations.md` is what enables
+cross-service debugging. It must document:
+- Which repos call which (with protocol: HTTP, SDK, shared DB)
+- What the contracts look like (request/response shapes)
+- What breaks when each dependency is down
+- Shared data models and where they diverge
+
+An LLM debugging a 502 needs to know "service A calls service B via HTTP at
+`/internal/process`, and if B is down, A returns 502 with error code
+`upstream_unavailable`." That single sentence saves 10 minutes of tracing.
+
+### Principle 6: Staleness markers
+
+Every article should have a way to detect staleness:
+- Reference specific file paths (if the file is gone, the article is stale)
+- Include the "Last updated" date at the bottom
+- Note the git commit hash when major changes were documented
+
+### Anti-patterns (DO NOT do these)
+
+- **Don't write marketing copy.** "Our elegant microservice architecture" is waste.
+  Write "3 Node.js services + 1 Rust library, all hitting the same MongoDB."
+- **Don't document the obvious.** "Express is a web framework" is waste. Document
+  what's specific to THIS project.
+- **Don't create empty placeholder articles.** An article with "TODO: document this"
+  pollutes INDEX.md and wastes context tokens.
+- **Don't nest wiki directories deeper than 2 levels.** `wiki/architecture/` is fine.
+  `wiki/architecture/services/backend/middleware/` is not.
 
 ---
 
@@ -203,22 +284,21 @@ Read these files in order:
    - Request/response types
    - Error types
 
-### 2b. For the scraping engine
+### 2b. For CLI tools / background daemons
 
 Read:
-1. CLI entry point (how it starts)
-2. Engine/pool management (browser lifecycle)
-3. Scraping pipeline (HTML -> extraction -> markdown)
-4. Proxy/tier logic
-5. Error handling
+1. CLI entry point (how it starts, what flags it takes)
+2. Core processing loop or pipeline
+3. Resource management (pools, connections, workers)
+4. Error handling and shutdown
 
-### 2c. For Rust crates (supermarkdown)
+### 2c. For Rust / Go / compiled libraries
 
 Read:
-1. `Cargo.toml` (dependencies, features)
-2. `src/lib.rs` (public API)
-3. Key modules (`src/table.rs`, etc.)
-4. NAPI bindings (how JS calls Rust)
+1. Build manifest (`Cargo.toml`, `go.mod`)
+2. Public API (`src/lib.rs`, exported package)
+3. Key modules
+4. FFI / NAPI / WASM bindings (how other languages call it)
 
 ### 2d. For frontend apps
 
@@ -228,21 +308,60 @@ Read:
 3. Route structure
 4. API client (how it calls the backend)
 
-### 2e. For SDKs
+### 2e. For SDKs / client libraries
 
 Read:
 1. Package manifest
-2. Client class (main API)
+2. Client class (main API surface)
 3. Types/interfaces
 4. Error handling
 
 ### 2f. For documentation sites
 
 Read:
-1. `mint.json` or equivalent config
+1. Config file (`mint.json`, `docusaurus.config.js`, etc.)
 2. Navigation structure
 3. Key concept pages
 4. API reference pages
+
+### 2g. Cross-repo integration points (CRITICAL for multi-repo workspaces)
+
+After reading individual repos, trace how they connect. For each pair of repos
+that communicate:
+
+1. **How does repo A call repo B?** (HTTP, SDK import, shared DB, message queue, CLI)
+2. **What is the contract?** (API endpoints, request/response shapes, error codes)
+3. **What data is shared?** (database collections/tables, schemas, types)
+4. **What is the dependency direction?** (who depends on whom, what breaks if B is down)
+5. **Are there shared types or schemas?** (duplicated types, generated clients, shared packages)
+
+Look for:
+- Import statements that reference other repos in the workspace
+- HTTP client calls to `localhost:{port}` pointing at sibling services
+- Shared database connection strings across repos
+- SDK packages published by one repo and consumed by another
+- Shared config or environment variables
+
+```bash
+# Find cross-repo HTTP calls
+grep -rn "localhost:\|127\.0\.0\.1:" */src/ 2>/dev/null | grep -v node_modules | head -20
+
+# Find shared database references
+grep -rn "mongodb://\|postgres://\|DATABASE_URL\|MONGO" */src/ */.env* 2>/dev/null | grep -v node_modules | head -20
+
+# Find internal SDK/package imports across repos
+for dir in */; do
+  [ -f "$dir/package.json" ] && grep -o '"@[^"]*"' "$dir/package.json" 2>/dev/null | while read pkg; do
+    for other in */; do
+      [ "$dir" != "$other" ] && [ -f "$other/package.json" ] && grep -q "\"name\": $pkg" "$other/package.json" 2>/dev/null && echo "  $dir imports $pkg from $other"
+    done
+  done
+done
+```
+
+**This is the most valuable knowledge for multi-repo debugging.** When a bug
+crosses service boundaries, knowing exactly how repo A calls repo B (and what
+the contract looks like) saves hours of tracing.
 
 **For each file you read, note:**
 - What it does (one sentence)
@@ -286,15 +405,15 @@ Changes flow downstream:
 
 ## Shared Resources
 
-- **MongoDB** ({connection string}): Used by {list services}. Database name: {name}.
-- {Other shared resources}
+- **{Database}** ({connection string}): Used by {list services}. Database name: {name}.
+- {Other shared resources: caches, queues, file storage, etc.}
 
 ## Key URLs
 
 | URL | Service | Auth |
 |-----|---------|------|
 | http://localhost:{port}/health | {service} | None |
-| http://localhost:{port}/v1/read | {service} | x-api-key |
+| http://localhost:{port}/{path} | {service} | {auth method} |
 | ... | ... | ... |
 ```
 
@@ -314,11 +433,11 @@ it solves for users.}
 | File | Purpose | Key exports |
 |------|---------|-------------|
 | `src/index.ts` | Server entry point | `app`, `startServer()` |
-| `src/routes/read.ts` | Main scraping endpoint | `readRouter` |
-| `src/middleware/auth.ts` | API key validation | `apiKeyAuth` |
+| `src/routes/{main}.ts` | Primary route handler | `{router}` |
+| `src/middleware/{auth}.ts` | Auth middleware | `{authMiddleware}` |
 | ... | ... | ... |
 
-{List the 10-20 most important files. Not every file -- the ones a developer
+{List the 10-20 most important files. Not every file, just the ones a developer
 needs to understand to work on this service.}
 
 ## How It Works
@@ -326,14 +445,12 @@ needs to understand to work on this service.}
 ### Request Flow
 {Trace a typical request from entry to response. Be specific:}
 
-1. Request arrives at `POST /v1/read` (`src/routes/read.ts:42`)
-2. Middleware chain runs: `apiKeyAuth` -> `rateLimitMiddleware` -> `creditsCheck` -> `idempotencyCheck`
-3. Request body validated with Zod schema (`ReadRequestSchema`)
-4. Mode detection: single URL -> sync scrape, array -> batch job, URL + maxDepth -> crawl
-5. For sync scrape: calls `readerEngine.scrape(url, options)` (`src/services/reader-engine.ts:58`)
-6. Engine returns `{markdown, html, metadata}` or throws
-7. Response formatted via `sendSuccess()` (`src/utils/api-response.ts`)
-8. Credits deducted, usage logged (fire-and-forget)
+1. Request arrives at `{METHOD} {path}` (`src/routes/{file}:{line}`)
+2. Middleware chain runs: {list each middleware in order}
+3. Request body validated with {validation library/schema}
+4. Core business logic: {what happens, what other services are called}
+5. Response formatted and returned
+6. Side effects: {logging, metrics, async jobs, etc.}
 
 ### Error Handling
 {How errors are caught, formatted, and returned. Reference the error codes.}
@@ -346,7 +463,7 @@ needs to understand to work on this service.}
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
 | `PORT` | 6002 | No | Server port |
-| `MONGODB_URI` | `mongodb://localhost:27017/reader-cloud` | Yes | Database connection |
+| `DATABASE_URL` | `{connection string}` | Yes | Database connection |
 | ... | ... | ... | ... |
 
 ## Data Models
@@ -362,13 +479,13 @@ schema -- the important fields.}
 ## Dependencies
 
 ### Depends on:
-- **MongoDB** -- {what it stores there}
-- **Reader Engine** (localhost:6003) -- {what it calls it for}
+- **{Database}** -- {what it stores there}
+- **{Other service}** (localhost:{port}) -- {what it calls it for, protocol}
 - {other dependencies}
 
 ### Depended on by:
-- **Reader Cloud API** -- {calls this service via SDK for scraping}
-- **SDKs** -- {users call this directly}
+- **{Consumer service}** -- {how it calls this service and why}
+- **{SDK / external consumers}** -- {how they interact}
 
 ## Testing
 
@@ -395,35 +512,97 @@ Create `wiki/architecture/data-flow.md`:
 ```markdown
 # Request Data Flow
 
-## Single URL Scrape (Synchronous)
-
-{Trace the complete lifecycle from SDK/curl to markdown response, across all
+{For each major user-facing operation, trace the complete lifecycle across all
 services involved. Include file:line references.}
 
-1. **Client** sends `POST /v1/read {"url": "..."}`
-2. **Reader API** (`reader-api/src/routes/read.ts:N`)
-   - Validates request with Zod
-   - Checks API key, rate limit, credits
-   - Detects mode: single URL -> sync
-   - Calls reader engine
-3. **Reader Engine** (`reader/src/engine/...`)
-   - Gets browser from pool
-   - Navigates to URL
-   - Waits for content
-   - Extracts HTML
-4. **Supermarkdown** (`supermarkdown/src/lib.rs`)
-   - Receives HTML
-   - Converts to markdown
-   - Returns structured output
-5. **Reader Engine** returns `{markdown, metadata}` to API
-6. **Reader API** returns `{success: true, data: {...}}` to client
+## {Operation Name} (e.g., "Create Resource", "Process Job", "User Login")
 
-## Batch Scrape (Asynchronous)
-{Same level of detail for batch mode}
+1. **{Entry point service}** (`{repo}/src/{file}:{line}`)
+   - What it receives (request shape)
+   - What validation/auth it performs
+   - What it calls next and why
+2. **{Next service in chain}** (`{repo}/src/{file}:{line}`)
+   - What it receives from the previous service
+   - What processing it does
+   - What it returns or passes downstream
+3. **{Continue for each service in the chain}**
 
-## Crawl (Asynchronous)
-{Same level of detail for crawl mode}
+{Repeat for each major operation. Cover both the happy path and key error paths.
+The goal is that someone debugging a cross-service issue can trace exactly which
+service handles which part of the request.}
 ```
+
+### 3d. Cross-repo integration article
+
+Create `wiki/architecture/integrations.md`:
+
+**This article is the most valuable artifact for multi-repo workspaces.** It
+documents how repos talk to each other, what contracts they share, and what
+breaks when something changes.
+
+```markdown
+# Cross-Repo Integrations
+
+## Integration Map
+
+{ASCII or text diagram showing which repos call which, and how:}
+
+```
+{repo-a} --HTTP--> {repo-b} --SDK--> {repo-c}
+    \                                    |
+     +--------shared DB-----------------+
+```
+
+## Service-to-Service Connections
+
+### {repo-a} -> {repo-b}
+
+- **Protocol:** HTTP / gRPC / SDK import / shared database / message queue
+- **How:** {e.g., "repo-a calls POST /v1/process on repo-b via HTTP client in
+  repo-a/src/services/processor.ts:42"}
+- **Contract:**
+  - Request: {shape, key fields}
+  - Response: {shape, key fields}
+  - Error codes: {what repo-b returns on failure}
+- **Auth:** {how repo-a authenticates to repo-b, e.g., internal API key, JWT}
+- **What breaks if repo-b is down:** {e.g., "repo-a returns 502 to the client"}
+
+### {repo-b} -> {repo-c}
+{Same format}
+
+## Shared Data
+
+### Database: {name}
+- **Used by:** {list repos}
+- **Shared collections/tables:**
+  | Collection/Table | Written by | Read by | Key fields |
+  |-----------------|-----------|---------|------------|
+  | {name} | {repo} | {repo, repo} | {fields} |
+
+### Shared Types / Schemas
+- **{type name}:** Defined in {repo/path}, consumed by {repo/path}
+  - Are they kept in sync? (shared package, copy-pasted, generated?)
+  - Known divergences: {any}
+
+## Dependency Chain
+
+Changes flow downstream. When you change something, here's what needs to
+restart, rebuild, or be aware:
+
+- {upstream repo} change -> {what to rebuild} -> {what to restart}
+- {shared-lib} change -> {rebuild consumers} -> {restart services}
+
+## Common Cross-Service Failure Modes
+
+| Failure | Symptom in {repo-a} | Actual cause in {repo-b} | How to debug |
+|---------|---------------------|--------------------------|--------------|
+| {name} | {what you see} | {what's actually wrong} | {where to look} |
+```
+
+**Why this article matters:** Most bugs in multi-repo systems manifest in one
+service but originate in another. This article is the map for tracing across
+boundaries. Every skill should update it when they discover a new integration
+path or failure mode.
 
 ---
 
@@ -439,14 +618,14 @@ Create `wiki/api/endpoints.md`:
 # API Endpoints
 
 ## Authentication
-{How auth works: header name, key format, validation process}
+{How auth works: header name, token format, validation process}
 
 ## Endpoints
 
-### POST /v1/read
+### {METHOD} {path}
 {Purpose, request body (every field), response shape (every field), error codes}
 
-### GET /v1/jobs/:id
+### {METHOD} {path}
 {Same level of detail}
 
 {Continue for EVERY endpoint}
@@ -465,17 +644,13 @@ Create `wiki/api/error-codes.md`:
 
 | Code | HTTP Status | Cause | Handling |
 |------|-------------|-------|----------|
-| `invalid_request` | 400 | Zod validation failure | Fix request body |
-| `unauthenticated` | 401 | Bad API key | Check x-api-key header |
+| `{error_code}` | {status} | {what triggers it} | {how to fix} |
 | ... | ... | ... | ... |
 
 ## Details
 
-### invalid_request (400)
+### {error_code} ({status})
 {When it triggers, what the response looks like, how to fix it}
-
-### unauthenticated (401)
-{Same level of detail}
 
 {Continue for EVERY error code}
 ```
@@ -557,8 +732,8 @@ Articles: {total count} | Est. words: ~{rough estimate}K
 
 **The one-line summaries are critical.** They're how the LLM decides which article to
 read during /investigate or /test-fix. Make them specific enough to be useful:
-- GOOD: "Reader API middleware chain, auth, rate limiting, credits, idempotency"
-- BAD: "Reader API documentation"
+- GOOD: "Backend API middleware chain: auth, rate limiting, quota, idempotency"
+- BAD: "Backend API documentation"
 
 ---
 
@@ -642,10 +817,11 @@ CONTEXT_DIR=$(ls -d *-context/ 2>/dev/null | head -1)
 ```
 
 **What to capture as learnings (examples):**
-- "reader-api uses fire-and-forget for credit deduction but awaits it in the sync scrape path to ensure 200 is never returned without charging" (architecture, confidence 9)
-- "supermarkdown NAPI bindings are in reader/src/native/, not in supermarkdown itself" (operational, confidence 10)
-- "reader-cloud-api shares the same MongoDB collections as reader-api, including ApiKey and Workspace" (architecture, confidence 9)
-- "The webhook signing secret is encrypted at rest with AES-256-GCM in reader-cloud-api" (architecture, confidence 9)
+- "backend-api uses fire-and-forget for usage tracking but awaits in the sync path to ensure 200 is never returned without logging" (architecture, confidence 9)
+- "shared-lib NAPI bindings are in backend/src/native/, not in shared-lib itself" (operational, confidence 10)
+- "frontend and backend share the same database collections, including User and Workspace" (architecture, confidence 9)
+- "service-a calls service-b via internal SDK, not direct HTTP, so errors are wrapped" (architecture, confidence 9)
+- "when shared-lib changes, backend must be rebuilt before restarting the API" (operational, confidence 10)
 
 For each learning:
 ```bash
@@ -730,9 +906,8 @@ Run /compile-wiki periodically to refresh as the codebase evolves.
    preserve what's still accurate. Don't destroy prior work.
 
 2. **Be concrete.** Name real files, real functions, real line numbers. Not "the auth
-   module" but "`reader-api/src/middleware/auth.ts:23`, the `apiKeyAuth` function that
-   validates the `x-api-key` header by SHA-256 hashing it and looking up the hash in
-   the `ApiKey` collection."
+   module" but "`backend/src/middleware/auth.ts:23`, the `verifyToken` function that
+   validates the bearer token by checking it against the sessions table."
 
 3. **Don't copy-paste code.** Reference it with file:line. The wiki explains WHAT and
    WHY. The code shows HOW. Link to the code, don't duplicate it.
@@ -743,10 +918,10 @@ Run /compile-wiki periodically to refresh as the codebase evolves.
 5. **INDEX.md must be EXACTLY right.** Every article on disk must be listed. Every
    listed article must exist. No orphans. Run the lint check.
 
-6. **Document non-obvious things.** "This is an Express server" is obvious. "The credits
-   middleware pre-estimates cost based on request type (1 for standard, 3 for stealth)
-   and rejects if balance is insufficient, then does a post-flight atomic deduction after
-   the scrape completes" is useful.
+6. **Document non-obvious things.** "This is an Express server" is obvious. "The rate
+   limiter pre-checks quota before processing, then does a post-flight atomic deduction
+   after the operation completes, so the request can still fail after the initial check
+   passes" is useful.
 
 7. **Cross-link articles.** Bug articles should link to the architecture article for
    the affected service. Architecture articles should link to related bugs and patterns.
@@ -755,6 +930,24 @@ Run /compile-wiki periodically to refresh as the codebase evolves.
 8. **Track compilation metadata.** The INDEX.md footer shows when it was last compiled
    and how many articles/words exist. This helps future sessions know if the wiki is
    fresh or stale.
+
+9. **Always create the integrations article.** In multi-repo workspaces, the
+   `wiki/architecture/integrations.md` article is the single most valuable artifact.
+   It documents how repos call each other, what contracts they share, and what breaks
+   when something changes. If it doesn't exist, create it. If it exists, verify it's
+   still accurate.
+
+10. **Take positions, don't hedge.** When documenting architecture, state what the
+    system does. Not "the service might use caching" but "the service caches responses
+    for 60s in Redis, keyed by URL hash." If you're uncertain, say "unverified" with
+    what you observed. Never write "there are many ways to think about this."
+
+11. **Write for the agent that comes after you.** Every article should answer: "If a
+    new Claude session needs to debug/modify this part of the system, what does it need
+    to know?" If the answer is "read the code," your article isn't useful enough.
+
+12. **Load RULES.md before compiling.** Read the project rules and respect them in the
+    wiki. If rules say "never mention X," the wiki should not mention X.
 
 ---
 

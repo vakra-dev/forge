@@ -1,3 +1,7 @@
+---
+description: Save complete session state for future sessions to resume from
+---
+
 # /checkpoint -- Save Session State
 
 You are a **Staff Engineer writing meticulous session notes**. Your job is to capture
@@ -138,7 +142,7 @@ fi
 ```bash
 echo ""
 echo "=== UNIT TEST STATUS ==="
-for dir in reader reader-api reader-cloud-api supermarkdown; do
+for dir in */; do
   if [ -d "$dir" ]; then
     HAS_TESTS="no"
     [ -f "$dir/vitest.config.ts" ] || [ -f "$dir/vitest.config.js" ] && HAS_TESTS="vitest"
@@ -163,24 +167,24 @@ If the user provided a title (e.g., `/checkpoint fixing table panic`), use it ex
 If no title provided, infer one from the session's work. The title should be 3-8 words
 that describe the main activity. Examples:
 - "e2e test suite setup"
-- "investigating table.rs panic"
-- "fixing amazon scrape failures"
+- "investigating parser panic"
+- "fixing auth middleware errors"
 - "initial wiki compilation"
-- "reader-api error handling"
+- "backend error handling"
 
 Convert to kebab-case for the filename: "investigating-table-rs-panic"
 
 ### 3b. What was being worked on
 
 1-3 sentences describing the high-level goal. Be specific: not "working on bugs" but
-"investigating why supermarkdown panics on nested HTML tables in Wikipedia articles."
+"investigating why the parser panics on deeply nested input structures."
 
 ### 3c. What was accomplished
 
 Bulleted list of CONCRETE outcomes. For each, include evidence:
-- "Fixed the pool timeout in reader engine (commit abc1234)"
-- "E2e test suite now passes 85/150 URLs (was 70/150)"
-- "Created wiki/bugs/table-rs-panic.md with investigation findings"
+- "Fixed the connection pool timeout in worker (commit abc1234)"
+- "Test suite now passes 85/150 (was 70/150)"
+- "Created wiki/bugs/parser-panic.md with investigation findings"
 - "Ran /compile-wiki, knowledge base now has 12 articles"
 
 If nothing was accomplished (e.g., pure investigation that didn't lead to a fix), say
@@ -200,8 +204,8 @@ Examples of GOOD entries:
   browsers on macOS due to Chromium process limits. Error: 'Failed to launch browser: too many open files'"
 - "Tried replacing recursive table parsing with iterative: FAILED because the HTML
   structure has arbitrary nesting depth that can't be flattened without losing rowspan/colspan info"
-- "Tried standard proxy for Amazon: FAILED with HTTP 503. Amazon's bot detection triggers
-  on datacenter IPs regardless of user-agent"
+- "Tried calling external API without auth token: FAILED with HTTP 403. The API requires
+  OAuth even for public endpoints"
 
 Examples of BAD entries (too vague to be useful):
 - "Tried fixing the table issue" (what exactly? what happened?)
@@ -217,9 +221,9 @@ Bulleted list of architectural choices, trade-offs, and design decisions with re
 - **Decision:** "Use streaming instead of polling for job progress"
   **Reason:** "Polling at 2s intervals misses rapid updates; SSE gives real-time progress"
 
-- **Decision:** "Mark Amazon URLs as known-flaky in test fixtures"
-  **Reason:** "Bot detection is an Amazon problem, not our code problem. Testing it
-  wastes time and makes pass rates misleading"
+- **Decision:** "Mark external API failures as known-flaky in test fixtures"
+  **Reason:** "Rate limiting is the external API's behavior, not our code problem.
+  Testing it wastes time and makes pass rates misleading"
 
 Future sessions should NOT re-litigate these decisions unless explicitly told to.
 
@@ -227,10 +231,10 @@ Future sessions should NOT re-litigate these decisions unless explicitly told to
 
 NUMBERED list of concrete next steps, in PRIORITY order:
 
-1. Fix the table.rs panic for nested tables (supermarkdown)
+1. Fix the parser panic on deeply nested input (shared-lib)
 2. Run /test-fix --only-failed to verify previous fixes
-3. Add error mapping for scrape_timeout in reader-api
-4. Set up CI pipeline for reader-api
+3. Add error mapping for timeout errors in backend
+4. Set up CI pipeline for backend
 
 Each item should be specific enough that a new session can start working immediately
 without asking "what do you mean by this?"
@@ -272,10 +276,8 @@ status: in-progress
 timestamp: {ISO-8601, e.g., 2026-04-07T10:30:45Z}
 project: {project name}
 branches:
-  reader: {branch}
-  reader-api: {branch}
-  reader-cloud-api: {branch}
-  supermarkdown: {branch}
+  {repo-name}: {branch}
+  {repo-name}: {branch}
   {etc. for each repo with a .git directory}
 files_modified:
   - {path/to/file1}
@@ -321,7 +323,7 @@ and list modified files. Include ALL repos with their branches, not just the one
 were modified.
 
 **files_modified** comes from `git status --porcelain` across all repos. Use paths
-relative to the workspace root: `reader-api/src/routes/read.ts`, not just `src/routes/read.ts`.
+relative to the workspace root: `backend/src/routes/users.ts`, not just `src/routes/users.ts`.
 
 ---
 
@@ -439,15 +441,25 @@ Check if a wiki/bugs/ article already exists for this bug:
 - Other bugs: {related bug articles}
 ```
 
-### 7b. Architecture articles
+### 7b. Architecture and integration articles
 
 Did you learn something about how the system works during this session?
 
 - Discovered a dependency between services not previously documented?
 - Found out how a particular code path works?
 - Understood an error propagation chain?
+- Traced a request across service boundaries?
+- Found shared data or schemas between repos?
 
 **If yes:** Check if the relevant architecture article exists. Update it or create it.
+
+**In particular, update `wiki/architecture/integrations.md`** if you discovered
+or traced any cross-repo interactions. This article is the most valuable artifact
+for multi-repo debugging. Add:
+- Service-to-service call paths you traced
+- Shared database collections/tables you found
+- Error propagation chains across service boundaries
+- Dependency ordering you learned (what must start before what)
 
 ### 7c. Decision articles
 
@@ -524,10 +536,10 @@ echo '{"ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","skill":"checkpoint","type":"TYPE
 ```
 
 **What counts as a genuine discovery** (log these):
-- "reader-api /ready checks both MongoDB AND engine health" (operational, confidence 9)
-- "supermarkdown table.rs uses recursive descent that overflows at depth >5" (architecture, confidence 8)
+- "API /ready endpoint checks both database AND worker health" (operational, confidence 9)
+- "shared-lib parser uses recursive descent that overflows at depth >5" (architecture, confidence 8)
 - "running vitest with --reporter=verbose shows individual test names" (tool, confidence 10)
-- "Amazon bot detection triggers on datacenter IPs regardless of user-agent" (pitfall, confidence 8)
+- "external API rate limits trigger on datacenter IPs regardless of auth token" (pitfall, confidence 8)
 
 **What does NOT count** (do not log these):
 - "MongoDB was running" (obvious, not a learning)

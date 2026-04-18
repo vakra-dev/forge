@@ -1,5 +1,5 @@
 #!/bin/bash
-# forge setup -- Initialize context repo and link commands into workspace
+# forge setup -- Initialize context repo, link commands, wire hooks
 #
 # Usage:
 #   ./forge/setup                    # Auto-detect project name from directory
@@ -28,6 +28,7 @@ fi
 
 CONTEXT_DIR="$WORKSPACE_DIR/${PROJECT_NAME}-context"
 COMMANDS_DIR="$WORKSPACE_DIR/.claude/commands"
+SETTINGS_FILE="$WORKSPACE_DIR/.claude/settings.json"
 
 echo ""
 echo "forge setup"
@@ -42,6 +43,12 @@ echo ""
 # Step 1: Create context repo if it doesn't exist
 if [ -d "$CONTEXT_DIR" ]; then
   echo "Context repo exists: $CONTEXT_DIR"
+
+  # Ensure RULES.md exists (may be missing from older setups)
+  if [ ! -f "$CONTEXT_DIR/RULES.md" ]; then
+    sed "s/{{PROJECT_NAME}}/$PROJECT_NAME/g" "$FORGE_DIR/templates/RULES.md.tmpl" > "$CONTEXT_DIR/RULES.md"
+    echo "  Created: RULES.md"
+  fi
 else
   echo "Creating context repo: $CONTEXT_DIR"
   mkdir -p "$CONTEXT_DIR"/{wiki/{architecture,api,bugs,decisions,patterns},raw,SESSIONS}
@@ -82,6 +89,7 @@ Every state change is a git commit. Full history and diffs.
 - \`INDEX.md\` -- Navigate the wiki (read this first)
 - \`STATE.md\` -- Current health of all repos/services
 - \`BACKLOG.md\` -- Known issues + what was tried
+- \`RULES.md\` -- Project rules (loaded automatically via hooks)
 - \`LEARNINGS.jsonl\` -- Cross-session institutional knowledge
 - \`timeline.jsonl\` -- Skill event history
 - \`SESSIONS/\` -- Session checkpoints
@@ -118,7 +126,82 @@ for cmd in "$FORGE_DIR"/commands/*.md; do
   echo "  Linked: /$(basename "$name" .md)"
 done
 
-# Step 3: Check for CLAUDE.md
+# Step 3: Wire hooks into .claude/settings.json
+echo ""
+echo "Wiring hooks..."
+mkdir -p "$WORKSPACE_DIR/.claude"
+
+# Build the hooks settings
+HOOKS_JSON=$(cat << 'HOOKEOF'
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/forge/hooks/session-init.sh",
+            "timeout": 15,
+            "statusMessage": "Loading project context..."
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git commit *)",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/forge/hooks/pre-commit-check.sh",
+            "timeout": 5,
+            "statusMessage": "Checking project rules..."
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/forge/hooks/session-end.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+HOOKEOF
+)
+
+if [ -f "$SETTINGS_FILE" ]; then
+  # Check if hooks are already configured
+  if grep -q '"hooks"' "$SETTINGS_FILE" 2>/dev/null; then
+    echo "  Hooks already configured in $SETTINGS_FILE"
+    echo "  To update, delete the 'hooks' key and re-run setup."
+  else
+    # Merge hooks into existing settings using a simple approach
+    # Remove the closing brace, add hooks, re-close
+    TMP_FILE=$(mktemp)
+    # Remove trailing } and whitespace, add comma + hooks
+    sed '$ s/}$//' "$SETTINGS_FILE" | sed -e :a -e '/^[[:space:]]*$/d;/^\n*$/{ $d; N; ba' -e '}' > "$TMP_FILE"
+    echo ',' >> "$TMP_FILE"
+    echo "$HOOKS_JSON" | sed '1d;$d' >> "$TMP_FILE"  # Strip outer braces
+    echo '}' >> "$TMP_FILE"
+    mv "$TMP_FILE" "$SETTINGS_FILE"
+    echo "  Hooks merged into $SETTINGS_FILE"
+  fi
+else
+  echo "$HOOKS_JSON" > "$SETTINGS_FILE"
+  echo "  Created $SETTINGS_FILE with hooks"
+fi
+
+# Step 4: Check for CLAUDE.md
 echo ""
 if [ -f "$WORKSPACE_DIR/CLAUDE.md" ]; then
   echo "CLAUDE.md exists. Checking for forge routing..."
@@ -138,8 +221,15 @@ echo ""
 echo "==========================================="
 echo "  forge is ready."
 echo ""
+echo "  What's set up:"
+echo "    Context repo:  $CONTEXT_DIR"
+echo "    Commands:      /status, /recall, /checkpoint, /compile-wiki,"
+echo "                   /investigate, /test-fix, /review, /rule"
+echo "    Hooks:         SessionStart (auto-context), PreToolUse (rule check),"
+echo "                   SessionEnd (timeline)"
+echo ""
 echo "  Next steps:"
-echo "    /status          Check your stack health"
 echo "    /compile-wiki    Build knowledge base from codebase"
-echo "    /checkpoint      Save current session state"
+echo "    /rule            Add project-specific rules"
+echo "    /status          Check your stack health"
 echo "==========================================="

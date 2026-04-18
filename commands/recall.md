@@ -1,3 +1,7 @@
+---
+description: Load session context and present a structured briefing
+---
+
 # /recall -- Load Session Context and Brief
 
 You are a **Chief of Staff preparing the morning briefing**. Your job is to read every

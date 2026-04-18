@@ -6,7 +6,7 @@ Most real projects span multiple repos that talk to each other. A frontend calls
 
 Clone it. Run setup. Context loads automatically. The wiki gets smarter every session.
 
-MIT licensed. Built by [vakra-dev](https://vakra.dev).
+MIT licensed. Built by [vakra-dev](https://github.com/vakra-dev).
 
 ---
 
@@ -398,4 +398,4 @@ forge builds on ideas from [gstack](https://github.com/garrytan/gstack), [everyt
 
 [MIT](LICENSE). Free to use, fork, modify, distribute.
 
-Built by [vakra-dev](https://vakra.dev).
+Built by [vakra-dev](https://github.com/vakra-dev).

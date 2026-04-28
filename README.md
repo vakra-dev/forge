@@ -390,7 +390,7 @@ forge is open source and contributions are welcome. The best way to contribute:
 
 ## Credits
 
-forge builds on ideas from [gstack](https://github.com/garrytan/gstack), [everything-claude-code](https://github.com/nicobailey/everything-claude-code), [Karpathy's LLM Knowledge Bases](https://x.com/karpathy/status/1924490451796930886), and [beads](https://github.com/gastownhall/beads).
+forge builds on ideas from [gstack](https://github.com/garrytan/gstack), [everything-claude-code](https://github.com/affaan-m/everything-claude-code), [Karpathy's LLM Knowledge Bases](https://x.com/karpathy/status/2039805659525644595), and [beads](https://github.com/gastownhall/beads).
 
 ---
 

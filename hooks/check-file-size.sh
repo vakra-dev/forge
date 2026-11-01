@@ -22,6 +22,8 @@ else
 fi
 
 [ -z "$FILE" ] && exit 0
+# Subagent reads (e.g. the /bulk-read worker) are not the expensive context: allow if the input names an agent
+if command -v jq >/dev/null 2>&1 && [ -n "$(echo "$INPUT" | jq -r '.agent_id // empty')" ]; then exit 0; fi
 forge_is_text "$FILE" || exit 0
 
 LINES=$(wc -l < "$FILE" | tr -d ' ')

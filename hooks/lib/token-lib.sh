@@ -2,6 +2,7 @@
 # forge token-optimization helpers (sourced by check-file-size.sh, check-bash-read.sh)
 
 FORGE_MAX_READ_LINES="${FORGE_MAX_READ_LINES:-350}"
+FORGE_MAX_READ_BYTES="${FORGE_MAX_READ_BYTES:-40000}"   # ~10K tokens; catches few-line, very wide files
 FORGE_TOKENS_PER_LINE=12
 
 forge_workspace() { echo "${CLAUDE_PROJECT_DIR:-$(pwd)}"; }

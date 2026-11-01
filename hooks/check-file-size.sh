@@ -27,21 +27,24 @@ if command -v jq >/dev/null 2>&1 && [ -n "$(echo "$INPUT" | jq -r '.agent_id // 
 forge_is_text "$FILE" || exit 0
 
 LINES=$(wc -l < "$FILE" | tr -d ' ')
+BYTES=$(wc -c < "$FILE" | tr -d ' ')
 
 # Targeted read: allow (log it so we can see how often it happens)
 if [ -n "$OFFSET" ] || [ -n "$LIMIT" ]; then
-  if [ "$LINES" -gt "$FORGE_MAX_READ_LINES" ]; then
+  if [ "$LINES" -gt "$FORGE_MAX_READ_LINES" ] || [ "$BYTES" -gt "$FORGE_MAX_READ_BYTES" ]; then
     forge_log "targeted_read" "$FILE" "$LINES" "${LIMIT:-2000}"
   fi
   exit 0
 fi
 
-[ "$LINES" -le "$FORGE_MAX_READ_LINES" ] && exit 0
+if [ "$LINES" -le "$FORGE_MAX_READ_LINES" ] && [ "$BYTES" -le "$FORGE_MAX_READ_BYTES" ]; then exit 0; fi
 
-forge_log "read_blocked" "$FILE" "$LINES"
+# Wide files: estimate lines from bytes (~100 bytes/line) so the log reflects real cost
+EST_LINES=$LINES; [ $((BYTES / 100)) -gt "$EST_LINES" ] && EST_LINES=$((BYTES / 100))
+forge_log "read_blocked" "$FILE" "$EST_LINES"
 
 {
-  echo "BLOCKED by forge: $FILE has $LINES lines (limit $FORGE_MAX_READ_LINES for full reads)."
+  echo "BLOCKED by forge: $FILE has $LINES lines / $BYTES bytes (limits: $FORGE_MAX_READ_LINES lines, $FORGE_MAX_READ_BYTES bytes for full reads)."
   echo "Do one of:"
   echo "  1. Read a section: Read with offset/limit (outline below gives line numbers)."
   echo "  2. Grep -n for the symbol/term you need, then Read ~60 lines around the match."

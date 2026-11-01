@@ -111,6 +111,7 @@ Configuration (environment variables):
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `FORGE_MAX_READ_LINES` | `350` | Line threshold for full reads |
+| `FORGE_MAX_READ_BYTES` | `40000` | Byte threshold for full reads (catches few-line, very wide files) |
 | `FORGE_ALLOW_FULL_READ` | `0` | Set to `1` to bypass both gates |
 | `FORGE_INIT_FULL` | `0` | Set to `1` to inject STATE.md and BACKLOG.md whole at session start |
 | `FORGE_STATE_FALLBACK_LINES` | `40` | Lines of STATE.md injected when it has no RESUME heading |

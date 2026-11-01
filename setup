@@ -160,6 +160,26 @@ HOOKS_JSON=$(cat << 'HOOKEOF'
             "statusMessage": "Checking project rules..."
           }
         ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/forge/hooks/check-file-size.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/forge/hooks/check-bash-read.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SessionEnd": [
@@ -182,8 +202,30 @@ HOOKEOF
 if [ -f "$SETTINGS_FILE" ]; then
   # Check if hooks are already configured
   if grep -q '"hooks"' "$SETTINGS_FILE" 2>/dev/null; then
-    echo "  Hooks already configured in $SETTINGS_FILE"
-    echo "  To update, delete the 'hooks' key and re-run setup."
+    if command -v jq >/dev/null 2>&1; then
+      # Idempotent merge: add any forge hook whose command is not already present
+      TMP_FILE=$(mktemp)
+      if jq --argjson want "$HOOKS_JSON" '
+        reduce ($want.hooks | to_entries[]) as $ev (.;
+          reduce $ev.value[] as $grp (.;
+            if ([.hooks[$ev.key][]?.hooks[]?.command] | any(. == $grp.hooks[0].command))
+            then . else .hooks[$ev.key] += [$grp] end))
+      ' "$SETTINGS_FILE" > "$TMP_FILE"; then
+        if cmp -s "$TMP_FILE" "$SETTINGS_FILE"; then
+          echo "  Hooks already up to date in $SETTINGS_FILE"
+          rm -f "$TMP_FILE"
+        else
+          mv "$TMP_FILE" "$SETTINGS_FILE"
+          echo "  Missing forge hooks merged into $SETTINGS_FILE"
+        fi
+      else
+        rm -f "$TMP_FILE"
+        echo "  Could not merge hooks (is $SETTINGS_FILE valid JSON?). Left untouched."
+      fi
+    else
+      echo "  Hooks already configured in $SETTINGS_FILE (install jq to auto-merge new hooks)."
+      echo "  Or delete the 'hooks' key and re-run setup."
+    fi
   else
     # Merge hooks into existing settings using a simple approach
     # Remove the closing brace, add hooks, re-close
@@ -224,8 +266,9 @@ echo ""
 echo "  What's set up:"
 echo "    Context repo:  $CONTEXT_DIR"
 echo "    Commands:      /status, /recall, /checkpoint, /compile-wiki,"
-echo "                   /investigate, /test-fix, /review, /rule"
-echo "    Hooks:         SessionStart (auto-context), PreToolUse (rule check),"
+echo "                   /investigate, /test-fix, /review, /rule, /bulk-read"
+echo "    Hooks:         SessionStart (auto-context), PreToolUse (rule check,"
+echo "                   large-file Read gate, Bash cat/head/tail gate),"
 echo "                   SessionEnd (timeline)"
 echo ""
 echo "  Next steps:"

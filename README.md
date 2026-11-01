@@ -79,8 +79,10 @@ forge uses Claude Code hooks to automatically manage context. No manual loading 
 
 | Hook | When it fires | What it does |
 |------|--------------|-------------|
-| **SessionStart** | Session start + after compaction | Injects RULES, INDEX, STATE, BACKLOG, learnings (with confidence decay) |
+| **SessionStart** | Session start + after compaction | Injects RULES, INDEX, the Now block of STATE, BACKLOG titles, learnings (with confidence decay) |
 | **PreToolUse** | Before `git commit` | Checks RULES.md and blocks commits that violate project rules |
+| **PreToolUse** | Before `Read` | Blocks full reads of files over 350 lines; prints an outline so the next read can be targeted |
+| **PreToolUse** | Before `Bash` | Blocks `cat`/`less`/`more` of large files, and `head`/`tail` asking for more than 350 lines |
 | **SessionEnd** | Session ends | Appends timeline entry for session tracking |
 
 This means:
@@ -88,6 +90,41 @@ This means:
 - After context compaction, the essential context is re-injected
 - Project rules are enforced without relying on the model to remember them
 - `/recall` is still available for the full structured briefing, but basic context is always there
+
+---
+
+## Token optimization
+
+Large files are the biggest token cost: a 2,000-line file is ~30K tokens, and it is re-sent on every later turn. forge cuts this in four ways.
+
+| Feature | What it does |
+|---------|--------------|
+| **Read gate** (`hooks/check-file-size.sh`) | A `Read` with no `offset`/`limit` on a file over 350 lines is blocked. The message includes a line-numbered outline (headings, or `fn`/`struct`/`class`/`def` lines) so the next read can target the right section. |
+| **Bash gate** (`hooks/check-bash-read.sh`) | Closes the `cat bigfile` loophole. Piped, redirected and compound commands pass; `head -n 50` passes. |
+| **Smaller session start** (`hooks/session-init.sh`) | Injects only the `### Now` block of STATE.md's RESUME section (plus a list of the other subsection titles) and BACKLOG titles. On vakra-data this took the injected context from 109 KB to 28 KB. |
+| **`/bulk-read`** (`commands/bulk-read.md`) | For *understanding* a large file, a read-only Haiku subagent answers your question and returns `path:start-end` ranges. You work from the answer and read only those lines. Editing is never delegated. |
+
+How it fits together: the hooks are the hard gate, and the skill is soft guidance. If the skill is ignored, the hook still blocks the expensive read.
+
+Configuration (environment variables):
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `FORGE_MAX_READ_LINES` | `350` | Line threshold for full reads |
+| `FORGE_ALLOW_FULL_READ` | `0` | Set to `1` to bypass both gates |
+| `FORGE_INIT_FULL` | `0` | Set to `1` to inject STATE.md and BACKLOG.md whole at session start |
+| `FORGE_STATE_FALLBACK_LINES` | `40` | Lines of STATE.md injected when it has no RESUME heading |
+
+### Measuring it
+
+The gates append to `.claude/forge-token-log.jsonl` (events: `read_blocked`, `bash_blocked`, `targeted_read`, `bulk_read`). Summarise it with:
+
+```bash
+forge/hooks/token-stats.sh        # all time
+forge/hooks/token-stats.sh 7      # last 7 days
+```
+
+Token counts are estimates (12 tokens per line). They show direction and which files cost the most, not billing. The real check is your weekly usage over the following weeks.
 
 ---
 
@@ -143,7 +180,7 @@ The `wiki/architecture/integrations.md` article is the single most valuable arti
 
 ## Skills
 
-forge ships with 8 skills. Each is a detailed prompt (400-960 lines) encoding an autonomous workflow with safety gates, wiki contribution, and escalation rules.
+forge ships with 9 skills. Each is a detailed prompt (400-960 lines) encoding an autonomous workflow with safety gates, wiki contribution, and escalation rules.
 
 ### /compile-wiki
 
@@ -191,6 +228,10 @@ Full structured session briefing: stack health, known issues, what not to retry,
 ### /checkpoint
 
 Captures complete session state: git state across all repos, what was done, what failed and **why**, decisions made, remaining work. The "What Failed" section prevents future sessions from retrying dead ends.
+
+### /bulk-read
+
+Delegates understanding of large files to a read-only Haiku subagent. Returns an answer plus the exact line ranges to read next. See [Token optimization](#token-optimization).
 
 ### /investigate
 
@@ -339,7 +380,7 @@ Hook scripts live in `forge/hooks/`. They're plain bash. Edit them to match your
 cd forge && git pull && ./forge/setup
 ```
 
-Your context repo is untouched (it's a separate git repo). Updates only affect skill prompts and hooks.
+Your context repo is untouched (it's a separate git repo). Updates only affect skill prompts and hooks. Re-running `./forge/setup` links new skills and, if `jq` is installed, merges any missing hooks into an existing `.claude/settings.json`.
 
 ### Architecture
 
@@ -356,7 +397,7 @@ forge/
   README.md                     # This file
   LICENSE                       # MIT
   setup                         # Setup script (creates context, links commands, wires hooks)
-  commands/                     # Skill prompts (8 files)
+  commands/                     # Skill prompts (9 files)
     status.md                   #   Health dashboard
     recall.md                   #   Session briefing
     checkpoint.md               #   Save session state
@@ -365,10 +406,16 @@ forge/
     test-fix.md                 #   Autonomous test-fix loop
     review.md                   #   Pre-landing code review
     rule.md                     #   Add project rules
+    bulk-read.md                #   Large-file reading via a Haiku subagent
   hooks/                        # Claude Code hook scripts
     session-init.sh             #   Auto-load context on session start
     pre-commit-check.sh         #   Enforce rules on git commits
     session-end.sh              #   Log session to timeline
+    check-file-size.sh          #   Read gate for large files
+    check-bash-read.sh          #   cat/head/tail gate
+    log-bulk-read.sh            #   Record a /bulk-read delegation
+    token-stats.sh              #   Summarise token savings
+    lib/token-lib.sh            #   Shared helpers (log, outline)
   templates/                    # Templates for context repo initialization
     CLAUDE.md.tmpl
     STATE.md.tmpl

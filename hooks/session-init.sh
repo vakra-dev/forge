@@ -15,6 +15,11 @@ fi
 
 PROJECT_NAME=$(basename "$CONTEXT_DIR" | sed 's/-context$//')
 
+# Token optimization: STATE.md -> RESUME section only, BACKLOG.md -> titles only.
+# FORGE_INIT_FULL=1 restores the old behaviour (inject both files whole).
+FORGE_INIT_FULL="${FORGE_INIT_FULL:-0}"
+FORGE_STATE_FALLBACK_LINES="${FORGE_STATE_FALLBACK_LINES:-40}"
+
 # --- Rules (non-negotiable, always loaded) ---
 if [ -f "${CONTEXT_DIR}RULES.md" ] && [ -s "${CONTEXT_DIR}RULES.md" ]; then
   echo "=== PROJECT RULES (MUST FOLLOW) ==="
@@ -32,7 +37,31 @@ fi
 # --- Current state (what's healthy/broken) ---
 if [ -f "${CONTEXT_DIR}STATE.md" ]; then
   echo "=== CURRENT STATE ==="
-  cat "${CONTEXT_DIR}STATE.md"
+  if [ "$FORGE_INIT_FULL" = "1" ]; then
+    cat "${CONTEXT_DIR}STATE.md"
+  else
+    # RESUME block: from the first "## ...RESUME..." heading to the next "## " heading.
+    # Inside it, inject only the "### Now" subsection plus a titled list of the rest.
+    RESUME=$(awk '/^## .*RESUME/ {f=1; print; next} f && /^## / {exit} f {print}' "${CONTEXT_DIR}STATE.md")
+    if [ -n "$RESUME" ]; then
+      NOW=$(echo "$RESUME" | awk '/^### Now/ {f=1; print; next} f && /^### / {exit} f {print}')
+      if [ -n "$NOW" ]; then
+        echo "$RESUME" | sed -n '1,/^### /p' | sed '$d'
+        echo "$NOW"
+        echo ""
+        echo "[forge] Other RESUME subsections (line: title) -- Read with offset/limit only when needed:"
+        awk '/^## .*RESUME/ {f=1; next} f && /^## / {exit} f && /^### / {print NR+0 ": " $0}' "${CONTEXT_DIR}STATE.md" | head -20
+      else
+        echo "$RESUME"
+      fi
+      echo ""
+      echo "[forge] STATE.md is trimmed. Full file: ${CONTEXT_DIR}STATE.md ($(wc -l < "${CONTEXT_DIR}STATE.md" | tr -d ' ') lines) -- Grep -n / Read with offset+limit, never whole."
+    else
+      head -n "$FORGE_STATE_FALLBACK_LINES" "${CONTEXT_DIR}STATE.md"
+      echo ""
+      echo "[forge] No RESUME heading in STATE.md; showing first $FORGE_STATE_FALLBACK_LINES lines. Full file: ${CONTEXT_DIR}STATE.md"
+    fi
+  fi
   echo ""
 fi
 
@@ -41,7 +70,12 @@ if [ -f "${CONTEXT_DIR}BACKLOG.md" ] && [ -s "${CONTEXT_DIR}BACKLOG.md" ]; then
   ACTIVE_COUNT=$(grep -c "^### " "${CONTEXT_DIR}BACKLOG.md" 2>/dev/null || echo "0")
   if [ "$ACTIVE_COUNT" -gt 0 ]; then
     echo "=== BACKLOG ($ACTIVE_COUNT active issues) ==="
-    cat "${CONTEXT_DIR}BACKLOG.md"
+    if [ "$FORGE_INIT_FULL" = "1" ]; then
+      cat "${CONTEXT_DIR}BACKLOG.md"
+    else
+      grep -n "^### " "${CONTEXT_DIR}BACKLOG.md" | cut -c1-160
+      echo "[forge] Titles only (line: title). Read details with offset/limit from ${CONTEXT_DIR}BACKLOG.md before retrying any approach listed there."
+    fi
     echo ""
   fi
 fi

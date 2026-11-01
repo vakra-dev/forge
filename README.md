@@ -102,7 +102,7 @@ Large files are the biggest token cost: a 2,000-line file is ~30K tokens, and it
 | **Read gate** (`hooks/check-file-size.sh`) | A `Read` with no `offset`/`limit` on a file over 350 lines is blocked. The message includes a line-numbered outline (headings, or `fn`/`struct`/`class`/`def` lines) so the next read can target the right section. |
 | **Bash gate** (`hooks/check-bash-read.sh`) | Closes the `cat bigfile` loophole. Piped, redirected and compound commands pass; `head -n 50` passes. |
 | **Smaller session start** (`hooks/session-init.sh`) | Injects only the `### Now` block of STATE.md's RESUME section (plus a list of the other subsection titles) and BACKLOG titles. On vakra-data this took the injected context from 109 KB to 28 KB. |
-| **`/bulk-read`** (`commands/bulk-read.md`) | For *understanding* a large file, a read-only Haiku subagent answers your question and returns `path:start-end` ranges. You work from the answer and read only those lines. Editing is never delegated. |
+| **`/bulk-read`** (`scripts/bulk-read`) | For questions that need most of a large file, or 3+ files, one tool-less Haiku call (headless `claude -p`, ~1.5K fixed overhead) reads them and returns a short answer with `path:start-end` ranges. The files never enter your context. Narrow questions are cheaper with Grep plus targeted reads. Editing is never delegated. |
 
 How it fits together: the hooks are the hard gate, and the skill is soft guidance. If the skill is ignored, the hook still blocks the expensive read.
 
@@ -118,14 +118,14 @@ Configuration (environment variables):
 
 ### Measuring it
 
-The gates append to `.claude/forge-token-log.jsonl` (events: `read_blocked`, `bash_blocked`, `targeted_read`, `bulk_read`). Summarise it with:
+The gates append to `.claude/forge-token-log.jsonl` (events: `read_blocked`, `bash_blocked`, `targeted_read`, `bulk_read`; bulk_read records the worker's real token usage). Summarise it with:
 
 ```bash
 forge/hooks/token-stats.sh        # all time
 forge/hooks/token-stats.sh 7      # last 7 days
 ```
 
-Token counts are estimates (12 tokens per line). They show direction and which files cost the most, not billing. The real check is your weekly usage over the following weeks.
+Gate savings are estimates (20 tokens per line). They show direction and which files cost the most, not billing. The real check is your weekly usage over the following weeks.
 
 ---
 
@@ -232,7 +232,7 @@ Captures complete session state: git state across all repos, what was done, what
 
 ### /bulk-read
 
-Delegates understanding of large files to a read-only Haiku subagent. Returns an answer plus the exact line ranges to read next. See [Token optimization](#token-optimization).
+Answers a question about large files with one cheap Haiku call and returns a short answer plus the exact line ranges to read next. Worker usage is logged. See [Token optimization](#token-optimization).
 
 ### /investigate
 
@@ -414,9 +414,10 @@ forge/
     session-end.sh              #   Log session to timeline
     check-file-size.sh          #   Read gate for large files
     check-bash-read.sh          #   cat/head/tail gate
-    log-bulk-read.sh            #   Record a /bulk-read delegation
     token-stats.sh              #   Summarise token savings
     lib/token-lib.sh            #   Shared helpers (log, outline)
+  scripts/                      # Delegation scripts
+    bulk-read                   #   One-shot Haiku reader (used by /bulk-read)
   templates/                    # Templates for context repo initialization
     CLAUDE.md.tmpl
     STATE.md.tmpl

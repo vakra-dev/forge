@@ -3,7 +3,7 @@
 
 FORGE_MAX_READ_LINES="${FORGE_MAX_READ_LINES:-350}"
 FORGE_MAX_READ_BYTES="${FORGE_MAX_READ_BYTES:-40000}"   # ~10K tokens; catches few-line, very wide files
-FORGE_TOKENS_PER_LINE=12
+FORGE_TOKENS_PER_LINE=20   # measured ~23 for dense Rust, ~12 for prose
 
 forge_workspace() { echo "${CLAUDE_PROJECT_DIR:-$(pwd)}"; }
 
@@ -28,8 +28,8 @@ forge_outline() {
   local f="$1"
   case "$f" in
     *.md|*.markdown)
-      grep -nE '^#{1,3} ' "$f" 2>/dev/null | head -40 ;;
+      grep -nE '^#{1,3} ' "$f" 2>/dev/null | head -25 ;;
     *)
-      grep -nE '^[[:space:]]*(pub(\([a-z]+\))?[[:space:]]+)?(async[[:space:]]+)?(unsafe[[:space:]]+)?(export[[:space:]]+)?(default[[:space:]]+)?(fn|struct|enum|trait|impl|mod|class|interface|def|function|func|type)[[:space:]]' "$f" 2>/dev/null | head -40 ;;
+      grep -nE '^[[:space:]]*(pub(\([a-z]+\))?[[:space:]]+)?(async[[:space:]]+)?(unsafe[[:space:]]+)?(export[[:space:]]+)?(default[[:space:]]+)?(fn|struct|enum|trait|impl|mod|class|interface|def|function|func|type)[[:space:]]' "$f" 2>/dev/null | head -25 ;;
   esac
 }

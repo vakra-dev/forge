@@ -78,9 +78,6 @@ done
 forge_log "bash_blocked" "${FILES[*]}" "$TOTAL"
 
 {
-  echo "BLOCKED by forge: \`$PROG\` would load $TOTAL lines into context (limit $FORGE_MAX_READ_LINES)."
-  printf '%s' "$BIG"
-  echo "Instead: Grep -n for what you need, Read with offset/limit, \`sed -n 'START,ENDp' file\`"
-  echo "(<= $FORGE_MAX_READ_LINES lines), or /bulk-read to have a Haiku subagent answer a question about the file."
+  echo "BLOCKED by forge: \`$PROG\` would load $TOTAL lines (limit $FORGE_MAX_READ_LINES). Grep -n, Read with offset/limit, or sed -n 'A,Bp' (<= $FORGE_MAX_READ_LINES lines). To understand most of the file or 3+ files: /bulk-read."
 } >&2
 exit 2

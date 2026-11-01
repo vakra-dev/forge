@@ -44,13 +44,7 @@ EST_LINES=$LINES; [ $((BYTES / 100)) -gt "$EST_LINES" ] && EST_LINES=$((BYTES / 
 forge_log "read_blocked" "$FILE" "$EST_LINES"
 
 {
-  echo "BLOCKED by forge: $FILE has $LINES lines / $BYTES bytes (limits: $FORGE_MAX_READ_LINES lines, $FORGE_MAX_READ_BYTES bytes for full reads)."
-  echo "Do one of:"
-  echo "  1. Read a section: Read with offset/limit (outline below gives line numbers)."
-  echo "  2. Grep -n for the symbol/term you need, then Read ~60 lines around the match."
-  echo "  3. To UNDERSTAND the file (not edit it): run /bulk-read, which has a Haiku subagent"
-  echo "     answer your question and return path:start-end line ranges to read next."
-  echo ""
+  echo "BLOCKED by forge: $FILE has $LINES lines / $BYTES bytes (limit $FORGE_MAX_READ_LINES lines / $FORGE_MAX_READ_BYTES bytes). Read a section with offset/limit (outline below), or Grep -n then Read ~60 lines around the match. To understand most of the file or 3+ files: /bulk-read."
   echo "Outline (line: definition):"
   forge_outline "$FILE"
 } >&2

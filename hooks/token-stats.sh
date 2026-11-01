@@ -20,5 +20,6 @@ jq -rs --arg since "$SINCE" '
     ($e | map(select(.event != "targeted_read")) | group_by(.file) | map({f: .[0].file, n: length, t: (map(.est_tokens)|add)})
       | sort_by(-.t) | .[:8][] | "  \(.n)x  ~\(.t)  \(.f)"),
     "",
-    "Total est. tokens kept out of Opus context (blocked + bulk_read): ~\($e | map(select(.event != "targeted_read") | .est_tokens) | add // 0)"
+    "Total est. tokens kept out of Opus context (blocked + bulk_read): ~\($e | map(select(.event != "targeted_read") | .est_tokens) | add // 0)",
+    "Haiku worker spend for bulk_read (measured): \($e | map(select(.event == "bulk_read") | (.worker_in // 0)) | add // 0) in / \($e | map(select(.event == "bulk_read") | (.worker_out // 0)) | add // 0) out tokens"
 ' "$LOG"

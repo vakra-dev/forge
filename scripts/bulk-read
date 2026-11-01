@@ -1,0 +1,78 @@
+#!/bin/bash
+# forge bulk-read: answer a question about large files with ONE cheap, tool-less
+# model call. The files go to the worker, never into the caller's context.
+#
+# Usage: bulk-read --question "..." --paths file1 [file2 ...]
+# Config: FORGE_BULK_MODEL (default haiku), FORGE_BULK_MAX_BYTES (default 300000)
+#
+# The worker is a headless `claude -p` run: no tools, no settings/hooks/MCP, no
+# CLAUDE.md, run from an empty temp dir. That keeps fixed overhead to ~1.5K tokens
+# (a Task subagent carries ~20K) and uses your existing Claude login.
+
+set -uo pipefail
+. "$(dirname "$0")/../hooks/lib/token-lib.sh"
+
+MODEL="${FORGE_BULK_MODEL:-haiku}"
+MAX_BYTES="${FORGE_BULK_MAX_BYTES:-300000}"
+
+question=""; paths=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --question) question="${2:-}"; shift 2 ;;
+    --paths)    shift; while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do paths+=("$1"); shift; done ;;
+    *)          shift ;;
+  esac
+done
+[ -z "$question" ] && { echo "Error: --question is required" >&2; exit 1; }
+[ ${#paths[@]} -eq 0 ] && { echo "Error: --paths is required" >&2; exit 1; }
+for p in "${paths[@]}"; do
+  [ -f "$p" ] && [ -r "$p" ] || { echo "Error: file not found or unreadable: $p" >&2; exit 1; }
+done
+command -v claude >/dev/null 2>&1 || { echo "Error: claude CLI not found" >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "Error: jq not found (brew install jq)" >&2; exit 1; }
+
+WORK=$(mktemp -d) || exit 1
+trap 'rm -rf "$WORK"' EXIT
+MSG="$WORK/message.txt"
+
+# Files wrapped in <file> tags, with line numbers so the answer can cite path:start-end
+total_lines=0
+for p in "${paths[@]}"; do
+  abs=$(cd "$(dirname "$p")" && pwd)/$(basename "$p")
+  { printf '<file path="%s">\n' "$abs"; cat -n "$p"; printf '</file>\n\n'; } >> "$MSG"
+  total_lines=$(( total_lines + $(wc -l < "$p" | tr -d ' ') ))
+done
+printf 'Question: %s\n' "$question" >> "$MSG"
+
+bytes=$(wc -c < "$MSG" | tr -d ' ')
+if [ "$bytes" -gt "$MAX_BYTES" ]; then
+  echo "Error: request is $bytes bytes (limit $MAX_BYTES). Send fewer or smaller files, or split the question." >&2
+  exit 1
+fi
+
+SYS="You answer ONE question about the files given. Be terse and exact. Format: ANSWER (max 8 lines); LOCATIONS as absolute-path:start-end with a few words each (use the shown line numbers; tight ranges); then UNCERTAIN: anything you could not confirm. Quote identifiers exactly. No preamble."
+
+cd "$WORK" || exit 1
+RESP="$WORK/resp.json"
+if ! claude -p --model "$MODEL" --tools "" --setting-sources "" --strict-mcp-config \
+      --disable-slash-commands --no-session-persistence --output-format json \
+      --system-prompt "$SYS" < "$MSG" > "$RESP" 2> "$WORK/err.txt"; then
+  echo "Error: worker call failed:" >&2; head -c 600 "$WORK/err.txt" >&2; exit 1
+fi
+
+text=$(jq -r '.result // empty' "$RESP" 2>/dev/null)
+if [ -z "$text" ]; then echo "Error: worker returned no text" >&2; head -c 600 "$RESP" >&2; exit 1; fi
+printf '%s\n' "$text"
+
+in_tok=$(jq -r '[.usage.input_tokens, .usage.cache_creation_input_tokens, .usage.cache_read_input_tokens] | map(. // 0) | add' "$RESP")
+out_tok=$(jq -r '.usage.output_tokens // 0' "$RESP")
+cost=$(jq -r '.total_cost_usd // 0' "$RESP")
+echo "[forge bulk-read: $MODEL, ${#paths[@]} file(s), $total_lines lines | worker used ${in_tok} in / ${out_tok} out tokens, \$${cost} | kept out of your context]" >&2
+
+# Log real worker usage (cd back: the log lives under the workspace)
+LOG="$(forge_workspace)/.claude/forge-token-log.jsonl"
+{ mkdir -p "$(dirname "$LOG")"
+  jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg f "${paths[*]}" --argjson lines "$total_lines" \
+     --argjson in "$in_tok" --argjson out "$out_tok" --arg model "$MODEL" \
+     '{ts:$ts,event:"bulk_read",file:$f,lines:$lines,est_tokens:($lines*20),worker_model:$model,worker_in:$in,worker_out:$out}' >> "$LOG"
+} 2>/dev/null || true
